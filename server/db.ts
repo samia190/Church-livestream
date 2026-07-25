@@ -1,215 +1,174 @@
-import { eq } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/mysql2";
 import {
-  InsertUser, users, streamingSessions, platformCredentials, sessionPlatformMap
-} from "../drizzle/schema";
-import { ENV } from './_core/env';
+  User,
+  PrayerRequest,
+  Donation,
+  ContactMessage,
+  Event,
+  Sermon,
+  AdminSetting,
+  StreamingSession,
+  PlatformConnection,
+  CameraDevice,
+  StreamBroadcast,
+  PlatformCredential,
+  SessionPlatformMap,
+  type IUser,
+} from "./models";
+import { ENV } from "./_core/env";
 
-let _db: ReturnType<typeof drizzle> | null = null;
-
-// Lazily create the drizzle instance so local tooling can run without a DB.
-export async function getDb() {
-  if (!_db && process.env.DATABASE_URL) {
-    try {
-      _db = drizzle(process.env.DATABASE_URL);
-    } catch (error) {
-      console.warn("[Database] Failed to connect:", error);
-      _db = null;
-    }
+// Ensure Mongoose is initialized before any query
+async function ensureConnected() {
+  try {
+    const { connectToMongo } = await import("./mongoConnection");
+    await connectToMongo();
+  } catch (error) {
+    console.warn("[Database] MongoDB connection failed:", error);
+    throw new Error("Database not available");
   }
-  return _db;
 }
 
-export async function upsertUser(user: InsertUser): Promise<void> {
+// ---- User operations ----
+export async function upsertUser(user: {
+  openId: string;
+  name?: string | null;
+  email?: string | null;
+  loginMethod?: string | null;
+  role?: "user" | "admin";
+  lastSignedIn?: Date;
+}): Promise<void> {
   if (!user.openId) {
     throw new Error("User openId is required for upsert");
   }
 
-  const db = await getDb();
-  if (!db) {
-    console.warn("[Database] Cannot upsert user: database not available");
-    return;
-  }
+  await ensureConnected();
 
   try {
-    const values: InsertUser = {
-      openId: user.openId,
-    };
-    const updateSet: Record<string, unknown> = {};
+    const values: Record<string, unknown> = {};
 
     const textFields = ["name", "email", "loginMethod"] as const;
-    type TextField = (typeof textFields)[number];
-
-    const assignNullable = (field: TextField) => {
-      const value = user[field];
-      if (value === undefined) return;
-      const normalized = value ?? null;
-      values[field] = normalized;
-      updateSet[field] = normalized;
-    };
-
-    textFields.forEach(assignNullable);
+    for (const field of textFields) {
+      const value = (user as any)[field];
+      if (value !== undefined) {
+        values[field] = value ?? null;
+      }
+    }
 
     if (user.lastSignedIn !== undefined) {
       values.lastSignedIn = user.lastSignedIn;
-      updateSet.lastSignedIn = user.lastSignedIn;
     }
     if (user.role !== undefined) {
       values.role = user.role;
-      updateSet.role = user.role;
     } else if (user.openId === ENV.ownerOpenId) {
-      values.role = 'admin';
-      updateSet.role = 'admin';
+      values.role = "admin";
     }
 
     if (!values.lastSignedIn) {
       values.lastSignedIn = new Date();
     }
 
-    if (Object.keys(updateSet).length === 0) {
-      updateSet.lastSignedIn = new Date();
-    }
-
-    await db.insert(users).values(values).onDuplicateKeyUpdate({
-      set: updateSet,
-    });
+    await User.findOneAndUpdate(
+      { openId: user.openId },
+      { $set: values },
+      { upsert: true, new: true }
+    );
   } catch (error) {
     console.error("[Database] Failed to upsert user:", error);
     throw error;
   }
 }
 
-export async function getUserByOpenId(openId: string) {
-  const db = await getDb();
-  if (!db) {
-    console.warn("[Database] Cannot get user: database not available");
-    return undefined;
-  }
-
-  const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
-
-  return result.length > 0 ? result[0] : undefined;
+export async function getUserByOpenId(openId: string): Promise<IUser | undefined> {
+  await ensureConnected();
+  const result = await User.findOne({ openId }).lean();
+  return result ?? undefined;
 }
 
-// TODO: add feature queries here as your schema grows.
-
+// ---- Prayer Requests ----
 export async function createPrayerRequest(data: {
   name: string;
   email: string;
   prayerRequest: string;
   isPublic: boolean;
 }) {
-  const db = await getDb();
-  if (!db) {
-    throw new Error("Database not available");
-  }
-
-  const { prayerRequests } = await import("../drizzle/schema");
-  
-  return db.insert(prayerRequests).values({
+  await ensureConnected();
+  return PrayerRequest.create({
     name: data.name,
     email: data.email,
     prayerRequest: data.prayerRequest,
-    isPublic: data.isPublic ? 1 : 0,
-    status: 'pending',
+    isPublic: data.isPublic,
+    status: "pending",
   });
 }
 
+// ---- Donations ----
 export async function createDonation(data: {
   donorName: string;
   email: string;
   amount: number;
-  method: 'online' | 'bank' | 'mobile' | 'inperson';
+  method: "online" | "bank" | "mobile" | "inperson";
   purpose?: string;
 }) {
-  const db = await getDb();
-  if (!db) {
-    throw new Error("Database not available");
-  }
-
-  const { donations } = await import("../drizzle/schema");
-  
-  return db.insert(donations).values({
+  await ensureConnected();
+  return Donation.create({
     donorName: data.donorName,
     email: data.email,
     amount: data.amount,
-    currency: 'KES',
+    currency: "KES",
     method: data.method,
-    purpose: data.purpose,
-    status: 'pending',
+    purpose: data.purpose ?? null,
+    status: "pending",
   });
 }
 
+// ---- Contact Messages ----
 export async function createContactMessage(data: {
   name: string;
   email: string;
   phone?: string;
   message: string;
 }) {
-  const db = await getDb();
-  if (!db) {
-    throw new Error("Database not available");
-  }
-
-  const { contactMessages } = await import("../drizzle/schema");
-  
-  return db.insert(contactMessages).values({
+  await ensureConnected();
+  return ContactMessage.create({
     name: data.name,
     email: data.email,
-    phone: data.phone,
+    phone: data.phone ?? null,
     message: data.message,
-    status: 'new',
+    status: "new",
   });
 }
 
-
-// Events queries
+// ---- Events ----
 export async function getPublishedEvents() {
-  const db = await getDb();
-  if (!db) {
-    throw new Error("Database not available");
-  }
-
-  const { events } = await import("../drizzle/schema");
-  return db.select().from(events).where(eq(events.isPublished, 1));
+  await ensureConnected();
+  return Event.find({ isPublished: true }).lean();
 }
 
 export async function createEvent(data: {
   title: string;
   description?: string;
-  eventType: 'service' | 'event' | 'crusade' | 'meeting' | 'other';
+  eventType: "service" | "event" | "crusade" | "meeting" | "other";
   startDate: Date;
   endDate?: Date;
   location?: string;
   imageUrl?: string;
 }) {
-  const db = await getDb();
-  if (!db) {
-    throw new Error("Database not available");
-  }
-
-  const { events } = await import("../drizzle/schema");
-  return db.insert(events).values({
+  await ensureConnected();
+  return Event.create({
     title: data.title,
-    description: data.description,
+    description: data.description ?? null,
     eventType: data.eventType,
     startDate: data.startDate,
-    endDate: data.endDate,
-    location: data.location,
-    imageUrl: data.imageUrl,
-    isPublished: 0,
+    endDate: data.endDate ?? null,
+    location: data.location ?? null,
+    imageUrl: data.imageUrl ?? null,
+    isPublished: false,
   });
 }
 
-// Sermons queries
+// ---- Sermons ----
 export async function getPublishedSermons() {
-  const db = await getDb();
-  if (!db) {
-    throw new Error("Database not available");
-  }
-
-  const { sermons } = await import("../drizzle/schema");
-  return db.select().from(sermons).where(eq(sermons.isPublished, 1));
+  await ensureConnected();
+  return Sermon.find({ isPublished: true }).lean();
 }
 
 export async function createSermon(data: {
@@ -221,223 +180,170 @@ export async function createSermon(data: {
   sermonDate: Date;
   duration?: number;
 }) {
-  const db = await getDb();
-  if (!db) {
-    throw new Error("Database not available");
-  }
-
-  const { sermons } = await import("../drizzle/schema");
-  return db.insert(sermons).values({
+  await ensureConnected();
+  return Sermon.create({
     title: data.title,
-    speaker: data.speaker,
-    description: data.description,
-    videoUrl: data.videoUrl,
-    audioUrl: data.audioUrl,
+    speaker: data.speaker ?? null,
+    description: data.description ?? null,
+    videoUrl: data.videoUrl ?? null,
+    audioUrl: data.audioUrl ?? null,
     sermonDate: data.sermonDate,
-    duration: data.duration,
-    isPublished: 0,
+    duration: data.duration ?? null,
+    isPublished: false,
   });
 }
 
-// Admin settings queries
+// ---- Admin Settings ----
 export async function getAdminSetting(key: string) {
-  const db = await getDb();
-  if (!db) {
-    throw new Error("Database not available");
-  }
-
-  const { adminSettings } = await import("../drizzle/schema");
-  const result = await db.select().from(adminSettings).where(eq(adminSettings.key, key)).limit(1);
-  return result.length > 0 ? result[0] : null;
+  await ensureConnected();
+  const result = await AdminSetting.findOne({ key }).lean();
+  return result ?? null;
 }
 
-export async function setAdminSetting(key: string, value: string, description?: string) {
-  const db = await getDb();
-  if (!db) {
-    throw new Error("Database not available");
-  }
-
-  const { adminSettings } = await import("../drizzle/schema");
-  return db.insert(adminSettings).values({
-    key,
-    value,
-    description,
-  }).onDuplicateKeyUpdate({
-    set: {
+export async function setAdminSetting(
+  key: string,
+  value: string,
+  description?: string
+) {
+  await ensureConnected();
+  return AdminSetting.findOneAndUpdate(
+    { key },
+    {
+      key,
       value,
-      description,
+      description: description ?? null,
+      updatedAt: new Date(),
     },
-  });
+    { upsert: true, new: true }
+  );
 }
 
-
-// Streaming Sessions queries
+// ---- Streaming Sessions ----
 export async function createStreamingSession(data: {
   title: string;
   description?: string;
   startTime: Date;
   endTime?: Date;
-  status?: 'scheduled' | 'live' | 'ended' | 'archived';
-}): Promise<number> {
-  const db = await getDb();
-  if (!db) {
-    throw new Error("Database not available");
-  }
-
-  const { streamingSessions } = await import("../drizzle/schema");
-  const [inserted] = await db.insert(streamingSessions).values({
+  status?: "scheduled" | "live" | "ended" | "archived";
+}): Promise<string> {
+  await ensureConnected();
+  const session = await StreamingSession.create({
     title: data.title,
-    description: data.description,
+    description: data.description ?? null,
     startTime: data.startTime,
-    endTime: data.endTime,
-    status: data.status || 'scheduled',
-  }).$returningId();
-
-  return inserted.id;
+    endTime: data.endTime ?? null,
+    status: data.status || "scheduled",
+  });
+  return session._id.toString();
 }
 
 export async function getStreamingSessions() {
-  const db = await getDb();
-  if (!db) {
-    throw new Error("Database not available");
-  }
-
-  const { streamingSessions } = await import("../drizzle/schema");
-  return db.select().from(streamingSessions);
+  await ensureConnected();
+  return StreamingSession.find({}).lean();
 }
 
-// Platform Connections queries
+// ---- Platform Connections ----
 export async function createPlatformConnection(data: {
-  platform: 'youtube' | 'facebook' | 'instagram' | 'tiktok' | 'twitter' | 'twitch';
+  platform:
+    | "youtube"
+    | "facebook"
+    | "instagram"
+    | "tiktok"
+    | "twitter"
+    | "twitch";
   accountName: string;
   accessToken: string;
   refreshToken?: string;
 }) {
-  const db = await getDb();
-  if (!db) {
-    throw new Error("Database not available");
-  }
-
-  const { platformConnections } = await import("../drizzle/schema");
-  return db.insert(platformConnections).values({
+  await ensureConnected();
+  return PlatformConnection.create({
     platform: data.platform,
     accountName: data.accountName,
     accessToken: data.accessToken,
-    refreshToken: data.refreshToken,
+    refreshToken: data.refreshToken ?? null,
   });
 }
 
 export async function getActivePlatformConnections() {
-  const db = await getDb();
-  if (!db) {
-    throw new Error("Database not available");
-  }
-
-  const { platformConnections } = await import("../drizzle/schema");
-  return db.select().from(platformConnections).where(eq(platformConnections.isActive, 1));
+  await ensureConnected();
+  return PlatformConnection.find({ isActive: true }).lean();
 }
 
-export async function deactivatePlatformConnection(id: number) {
-  const db = await getDb();
-  if (!db) {
-    throw new Error("Database not available");
-  }
-
-  const { platformConnections } = await import("../drizzle/schema");
-  return db.update(platformConnections).set({ isActive: 0 }).where(eq(platformConnections.id, id));
+export async function deactivatePlatformConnection(id: string) {
+  await ensureConnected();
+  return PlatformConnection.findByIdAndUpdate(id, {
+    isActive: false,
+    updatedAt: new Date(),
+  });
 }
 
-// Camera Devices queries
+// ---- Camera Devices ----
 export async function registerCameraDevice(data: {
   name: string;
   deviceId: string;
-  type: 'webcam' | 'external' | 'phone' | 'other';
+  type: "webcam" | "external" | "phone" | "other";
   resolution?: string;
   frameRate?: number;
 }) {
-  const db = await getDb();
-  if (!db) {
-    throw new Error("Database not available");
-  }
-
-  const { cameraDevices } = await import("../drizzle/schema");
-  return db.insert(cameraDevices).values({
+  await ensureConnected();
+  return CameraDevice.create({
     name: data.name,
     deviceId: data.deviceId,
     type: data.type,
-    resolution: data.resolution,
-    frameRate: data.frameRate,
-    status: 'available',
+    resolution: data.resolution ?? null,
+    frameRate: data.frameRate ?? null,
+    status: "available",
   });
 }
 
 export async function getAvailableCameras() {
-  const db = await getDb();
-  if (!db) {
-    throw new Error("Database not available");
-  }
-
-  const { cameraDevices } = await import("../drizzle/schema");
-  return db.select().from(cameraDevices).where(eq(cameraDevices.isActive, 1));
+  await ensureConnected();
+  return CameraDevice.find({ isActive: true }).lean();
 }
 
-// Stream Broadcasts queries
+// ---- Stream Broadcasts ----
 export async function createStreamBroadcast(data: {
-  sessionId: number;
-  platform: 'youtube' | 'facebook' | 'instagram' | 'tiktok' | 'twitter' | 'twitch';
+  sessionId: string;
+  platform:
+    | "youtube"
+    | "facebook"
+    | "instagram"
+    | "tiktok"
+    | "twitter"
+    | "twitch";
   broadcastUrl?: string;
 }) {
-  const db = await getDb();
-  if (!db) {
-    throw new Error("Database not available");
-  }
-
-  const { streamBroadcasts } = await import("../drizzle/schema");
-  return db.insert(streamBroadcasts).values({
+  await ensureConnected();
+  return StreamBroadcast.create({
     sessionId: data.sessionId,
     platform: data.platform,
-    broadcastUrl: data.broadcastUrl,
-    status: 'pending',
+    broadcastUrl: data.broadcastUrl ?? null,
+    status: "pending",
   });
 }
 
-
-
-// Additional streaming helpers
+// ---- Additional streaming helpers ----
 export async function getActiveStream() {
-  const db = await getDb();
-  if (!db) return null;
-  
-  const result = await db
-    .select()
-    .from(streamingSessions)
-    .where(eq(streamingSessions.status, 'live'))
-    .limit(1);
-  
-  return result.length > 0 ? result[0] : null;
+  await ensureConnected();
+  const result = await StreamingSession.findOne({ status: "live" }).lean();
+  return result ?? null;
 }
 
-export async function updateStreamStatus(sessionId: number, status: 'scheduled' | 'live' | 'ended' | 'archived') {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  
-  await db
-    .update(streamingSessions)
-    .set({ status, updatedAt: new Date() })
-    .where(eq(streamingSessions.id, sessionId));
+export async function updateStreamStatus(
+  sessionId: string,
+  status: "scheduled" | "live" | "ended" | "archived"
+) {
+  await ensureConnected();
+  return StreamingSession.findByIdAndUpdate(sessionId, {
+    status,
+    updatedAt: new Date(),
+  });
 }
 
 export async function getPlatformCredentials(platform: string) {
-  const db = await getDb();
-  if (!db) return null;
-  
-  const result = await db
-    .select()
-    .from(platformCredentials)
-    .where(eq(platformCredentials.platform, platform as any))
-    .limit(1);
-  
-  return result.length > 0 ? result[0] : null;
+  await ensureConnected();
+  const result = await PlatformCredential.findOne({ platform }).lean();
+  return result ?? null;
 }
 
 export async function savePlatformCredential(data: {
@@ -451,49 +357,36 @@ export async function savePlatformCredential(data: {
   accountId?: string;
   accountName?: string;
 }) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  
-  await db
-    .insert(platformCredentials)
-    .values({
-      platform: data.platform as any,
-      streamKey: data.streamKey,
-      streamUrl: data.streamUrl,
-      apiKey: data.apiKey,
-      apiSecret: data.apiSecret,
-      accessToken: data.accessToken,
-      refreshToken: data.refreshToken,
-      accountId: data.accountId,
-      accountName: data.accountName,
-      isActive: 1,
-    });
+  await ensureConnected();
+  return PlatformCredential.create({
+    platform: data.platform,
+    streamKey: data.streamKey ?? null,
+    streamUrl: data.streamUrl ?? null,
+    apiKey: data.apiKey ?? null,
+    apiSecret: data.apiSecret ?? null,
+    accessToken: data.accessToken ?? null,
+    refreshToken: data.refreshToken ?? null,
+    accountId: data.accountId ?? null,
+    accountName: data.accountName ?? null,
+    isActive: true,
+  });
 }
 
-export async function getSessionPlatforms(sessionId: number) {
-  const db = await getDb();
-  if (!db) return [];
-  
-  const result = await db
-    .select()
-    .from(sessionPlatformMap)
-    .where(eq(sessionPlatformMap.sessionId, sessionId));
-  
-  return result;
+export async function getSessionPlatforms(sessionId: string) {
+  await ensureConnected();
+  return SessionPlatformMap.find({ sessionId }).lean();
 }
 
 export async function addSessionPlatform(data: {
-  sessionId: number;
+  sessionId: string;
   platform: string;
   broadcastUrl?: string;
 }) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  
-  await db.insert(sessionPlatformMap).values({
+  await ensureConnected();
+  return SessionPlatformMap.create({
     sessionId: data.sessionId,
-    platform: data.platform as any,
-    broadcastUrl: data.broadcastUrl,
-    status: 'pending',
+    platform: data.platform,
+    broadcastUrl: data.broadcastUrl ?? null,
+    status: "pending",
   });
 }

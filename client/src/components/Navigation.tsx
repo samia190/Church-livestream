@@ -55,7 +55,15 @@ export default function Navigation() {
           >
             <Link href="/" className="flex items-center gap-3">
               <div className="w-11 h-11 rounded-full glow-ring flex items-center justify-center overflow-hidden bg-card">
-                <img src="/manus-storage/nica-logo_37f1174c.png" alt="NICA Logo" className="w-9 h-9 object-contain" />
+                <img 
+                  src="/manus-storage/nica-logo_37f1174c.png" 
+                  alt="NICA Logo" 
+                  className="w-9 h-9 object-contain"
+                  onError={(e) => {
+                    // Fallback to a placeholder or text if the storage proxy fails
+                    e.currentTarget.src = "https://ui-avatars.com/api/?name=NICA&background=0a0714&color=f59e0b";
+                  }}
+                />
               </div>
               <div>
                 <h1 className="text-sm font-display font-semibold text-foreground tracking-tight">N.I.C.A. Kibugu</h1>

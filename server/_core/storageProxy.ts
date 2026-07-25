@@ -10,7 +10,9 @@ export function registerStorageProxy(app: Express) {
     }
 
     if (!ENV.forgeApiUrl || !ENV.forgeApiKey) {
-      res.status(500).send("Storage proxy not configured");
+      // In development, if storage is not configured, we might want to return a 404 or a local placeholder
+      // rather than a 500 which crashes the client-side loading.
+      res.status(404).send("Storage proxy not configured");
       return;
     }
 

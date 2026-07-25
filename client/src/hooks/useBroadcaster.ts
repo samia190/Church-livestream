@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 // Free, public, no-account-needed STUN servers. These help two peers on
 // typical home/office networks discover how to reach each other directly.
@@ -12,7 +12,7 @@ const ICE_SERVERS: RTCIceServer[] = [
 ];
 
 interface StartBroadcastArgs {
-  sessionId: number;
+  sessionId: string;
   title: string;
   description?: string;
 }
@@ -24,6 +24,49 @@ export function useBroadcaster() {
   const [connected, setConnected] = useState(false);
   const [isLive, setIsLive] = useState(false);
   const [viewerCount, setViewerCount] = useState(0);
+  const [streamStats, setStreamStats] = useState({
+    bitrate: 0,
+    fps: 0,
+    resolution: "",
+    packetsLost: 0
+  });
+
+  // Stats polling interval
+  useEffect(() => {
+    if (!isLive) return;
+    
+    const interval = setInterval(async () => {
+      // Get stats from the first peer connection as a proxy for the whole stream
+      const firstPeer = Array.from(peersRef.current.values())[0];
+      if (!firstPeer) return;
+
+      try {
+        const stats = await firstPeer.getStats();
+        let bitrate = 0;
+        let fps = 0;
+        let resolution = "";
+        let packetsLost = 0;
+
+        stats.forEach(report => {
+          if (report.type === 'outbound-rtp' && report.kind === 'video') {
+            // Bitrate calculation would need previous value, but we can approximate or just show current
+            bitrate = (report.bytesSent * 8) / 1000000; // Simplified
+            fps = report.framesPerSecond || 0;
+            packetsLost = report.packetsLost || 0;
+          }
+          if (report.type === 'track' && report.kind === 'video') {
+            resolution = `${report.frameWidth}x${report.frameHeight}`;
+          }
+        });
+
+        setStreamStats({ bitrate, fps, resolution, packetsLost });
+      } catch (err) {
+        console.error("Failed to get RTC stats", err);
+      }
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [isLive]);
 
   const createPeerForViewer = useCallback((viewerId: string) => {
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
@@ -68,6 +111,8 @@ export function useBroadcaster() {
     [createPeerForViewer]
   );
 
+  const [chatMessages, setChatMessages] = useState<any[]>([]);
+
   const handleMessage = useCallback(
     async (event: MessageEvent) => {
       let msg: any;
@@ -108,12 +153,43 @@ export function useBroadcaster() {
         case "viewer-count-update":
           setViewerCount(msg.viewers);
           break;
+        case "chat-message":
+          setChatMessages(prev => [...prev, {
+            id: msg.id,
+            user: msg.user,
+            message: msg.message,
+            timestamp: new Date(msg.timestamp),
+            role: msg.role
+          }]);
+          break;
+        case "chat-message-deleted":
+          setChatMessages(prev => prev.filter(m => m.id !== msg.messageId));
+          break;
         default:
           break;
       }
     },
     [sendOfferToViewer]
   );
+
+  const sendChatMessage = useCallback((message: string, user: string = "Admin") => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: "chat-message",
+        message,
+        user
+      }));
+    }
+  }, []);
+
+  const deleteChatMessage = useCallback((messageId: string) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: "delete-chat-message",
+        messageId
+      }));
+    }
+  }, []);
 
   const startBroadcast = useCallback(
     (stream: MediaStream, session: StartBroadcastArgs) => {
@@ -161,6 +237,17 @@ export function useBroadcaster() {
     setViewerCount(0);
   }, []);
 
+  const updateBroadcast = useCallback((title: string, description: string) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: "go-live", // Re-sending go-live updates the session info
+        sessionId: "", // Not strictly needed for update but good for consistency
+        title,
+        description
+      }));
+    }
+  }, []);
+
   // Called when the admin switches camera (device or front/back) while
   // already live. Replaces the outgoing track on every existing peer
   // connection in place — via RTCRtpSender.replaceTrack — so viewers keep
@@ -181,5 +268,5 @@ export function useBroadcaster() {
     });
   }, []);
 
-  return { connected, isLive, viewerCount, startBroadcast, stopBroadcast, updateLocalStream };
+  return { connected, isLive, viewerCount, streamStats, chatMessages, setChatMessages, startBroadcast, stopBroadcast, updateBroadcast, updateLocalStream, sendChatMessage, deleteChatMessage };
 }

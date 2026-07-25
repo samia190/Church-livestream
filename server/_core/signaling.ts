@@ -21,7 +21,7 @@ import { updateStreamStatus as dbUpdateStreamStatus } from "../db";
  */
 
 interface SessionInfo {
-  sessionId: number;
+  sessionId: string;
   title: string;
   description?: string;
   startedAt: number;
@@ -193,6 +193,32 @@ export function attachSignalingServer(server: HttpServer) {
               candidate: msg.candidate,
             });
           }
+          break;
+        }
+
+        case "chat-message": {
+          if (!entry) return;
+          const chatPayload = {
+            type: "chat-message",
+            id: randomUUID(),
+            user: msg.user || (entry.role === "admin" ? "Admin" : "Viewer"),
+            message: msg.message,
+            timestamp: Date.now(),
+            role: entry.role,
+          };
+          broadcastToViewers(chatPayload);
+          if (broadcaster) safeSend(broadcaster.ws, chatPayload);
+          break;
+        }
+
+        case "delete-chat-message": {
+          if (!entry || entry.role !== "admin") return;
+          const deletePayload = {
+            type: "chat-message-deleted",
+            messageId: msg.messageId,
+          };
+          broadcastToViewers(deletePayload);
+          if (broadcaster) safeSend(broadcaster.ws, deletePayload);
           break;
         }
 

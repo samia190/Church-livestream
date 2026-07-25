@@ -78,14 +78,22 @@ export default function StreamAnalyticsEnhanced({ sessionData, isLive = false }:
     if (!isLive) return;
 
     const interval = setInterval(() => {
-      setCurrentStats(prev => ({
-        ...prev,
-        viewers: Math.max(0, prev.viewers + Math.floor((Math.random() - 0.4) * 50)),
-        bitrate: Math.max(1, prev.bitrate + (Math.random() - 0.5) * 0.5),
-        fps: Math.random() > 0.95 ? 30 : 60,
-        cpu: Math.min(100, Math.max(30, prev.cpu + (Math.random() - 0.5) * 5)),
-        droppedFrames: Math.random() > 0.9 ? prev.droppedFrames + 1 : prev.droppedFrames,
-      }));
+      // Only simulate if sessionData is not providing real-time updates
+      // or use sessionData as base and add small variations for realism
+      setCurrentStats(prev => {
+        const baseViewers = sessionData?.currentViewers ?? prev.viewers;
+        const baseBitrate = sessionData?.bitrate ?? prev.bitrate;
+        const baseFps = sessionData?.fps ?? prev.fps;
+        
+        return {
+          ...prev,
+          viewers: baseViewers,
+          bitrate: baseBitrate > 0 ? baseBitrate : Math.max(1, prev.bitrate + (Math.random() - 0.5) * 0.2),
+          fps: baseFps > 0 ? baseFps : (Math.random() > 0.98 ? 30 : 60),
+          cpu: Math.min(100, Math.max(30, prev.cpu + (Math.random() - 0.5) * 2)),
+          droppedFrames: sessionData?.droppedFrames ?? (Math.random() > 0.95 ? prev.droppedFrames + 1 : prev.droppedFrames),
+        };
+      });
 
       // Add new data point to analytics
       setAnalyticsData(prev => {
@@ -105,7 +113,7 @@ export default function StreamAnalyticsEnhanced({ sessionData, isLive = false }:
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [isLive, currentStats]);
+  }, [isLive, currentStats, sessionData]);
 
   // Calculate stream health
   const getStreamHealth = () => {

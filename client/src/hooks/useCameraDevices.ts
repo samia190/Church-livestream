@@ -76,13 +76,18 @@ export function useCameraDevices() {
   const start = useCallback(async () => {
     try {
       return await acquireStream({
-        video: { width: { ideal: 1920 }, height: { ideal: 1080 } },
+        video: { width: { ideal: 1280 }, height: { ideal: 720 } }, // More conservative default for better compatibility
         audio: true,
       });
     } catch (err: any) {
       console.error("[Camera] Failed to start camera:", err);
-      setError(err?.message || "Could not access camera/microphone");
-      throw err;
+      // If 720p fails, try basic constraints
+      try {
+        return await acquireStream({ video: true, audio: true });
+      } catch (innerErr: any) {
+        setError(innerErr?.message || "Could not access camera/microphone");
+        throw innerErr;
+      }
     }
   }, [acquireStream]);
 

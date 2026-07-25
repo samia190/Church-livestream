@@ -180,9 +180,11 @@ export default defineConfig({
       "127.0.0.1",
     ],
     hmr: {
-      protocol: "wss",
-      host: "3000-ivbsvx8kzce593rp82bor-0ad0ffea.us1.manus.computer",
-      port: 443,
+      // Protocol and host will be determined automatically by the browser in local development.
+      // If running behind a proxy or in a specific cloud environment, these can be set via env vars.
+      protocol: process.env.VITE_HMR_PROTOCOL || undefined,
+      host: process.env.VITE_HMR_HOST || undefined,
+      port: process.env.VITE_HMR_PORT ? parseInt(process.env.VITE_HMR_PORT) : undefined,
     },
     fs: {
       strict: true,

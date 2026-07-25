@@ -82,8 +82,8 @@ export const ModernLiveStudio: React.FC = () => {
     }
   }, [stream]);
 
-  const [sessionId, setSessionId] = useState<number | null>(null);
-  const { viewerCount, startBroadcast, stopBroadcast, updateLocalStream, connected: signalingConnected } = useBroadcaster();
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const { viewerCount, streamStats, startBroadcast, stopBroadcast, updateBroadcast, updateLocalStream, connected: signalingConnected, chatMessages: liveChatMessages, sendChatMessage, deleteChatMessage } = useBroadcaster();
 
   const { mutateAsync: goLiveMutation, isPending: goLivePending } = trpc.streaming.goLive.useMutation();
   const { mutateAsync: endLiveMutation } = trpc.streaming.endLive.useMutation();
@@ -93,10 +93,17 @@ export const ModernLiveStudio: React.FC = () => {
   const peakViewersRef = useRef(0);
   useEffect(() => {
     if (isLive) {
-      setStats(prev => ({ ...prev, viewers: viewerCount }));
+      setStats(prev => ({
+        ...prev,
+        viewers: viewerCount,
+        bitrate: streamStats.bitrate > 0 ? `${streamStats.bitrate.toFixed(1)} Mbps` : prev.bitrate,
+        fps: streamStats.fps || prev.fps,
+        resolution: streamStats.resolution || prev.resolution,
+        dropped: streamStats.packetsLost || prev.dropped,
+      }));
       peakViewersRef.current = Math.max(peakViewersRef.current, viewerCount);
     }
-  }, [isLive, viewerCount]);
+  }, [isLive, viewerCount, streamStats]);
 
   const handleGoLive = async () => {
     if (!streamTitle.trim()) {
@@ -115,11 +122,11 @@ export const ModernLiveStudio: React.FC = () => {
       });
       setSessionId(result.sessionId);
       peakViewersRef.current = 0;
-      startBroadcast(stream, {
-        sessionId: result.sessionId,
-        title: streamTitle,
-        description: streamDescription,
-      });
+	      startBroadcast(stream, {
+	        sessionId: result.sessionId,
+	        title: streamTitle,
+	        description: streamDescription,
+	      });
       setIsLive(true);
       toast.success('🔴 LIVE NOW — anyone on Watch Live can see you');
     } catch (err) {
@@ -213,7 +220,7 @@ export const ModernLiveStudio: React.FC = () => {
     }
   };
 
-  const handleDisconnectPlatform = async (id: number, name: string) => {
+  const handleDisconnectPlatform = async (id: string, name: string) => {
     try {
       await removePlatformMutation({ id });
       await refetchPlatforms();
@@ -226,18 +233,12 @@ export const ModernLiveStudio: React.FC = () => {
 
   const handleSendChat = () => {
     if (!newMessage.trim()) return;
-    const message: ChatMessage = {
-      id: String(chatMessages.length + 1),
-      user: 'Admin',
-      message: newMessage,
-      timestamp: new Date(),
-    };
-    setChatMessages([...chatMessages, message]);
+    sendChatMessage(newMessage, 'Admin');
     setNewMessage('');
   };
 
   const handleModerateChat = (messageId: string) => {
-    setChatMessages(chatMessages.filter(m => m.id !== messageId));
+    deleteChatMessage(messageId);
     toast.success('Message removed');
   };
 
@@ -412,7 +413,7 @@ export const ModernLiveStudio: React.FC = () => {
               )}
               {(connectedPlatforms ?? []).map((p: any) => (
                 <div
-                  key={p.id}
+                  key={p._id}
                   className="p-3 bg-void/40 rounded-lg border border-border/40 flex items-center justify-between"
                 >
                   <div className="flex items-center gap-3">
@@ -423,7 +424,7 @@ export const ModernLiveStudio: React.FC = () => {
                     </div>
                   </div>
                   <Button
-                    onClick={() => handleDisconnectPlatform(p.id, p.platform)}
+                    onClick={() => handleDisconnectPlatform(p._id, p.platform)}
                     variant="outline"
                     size="sm"
                   >
@@ -490,8 +491,8 @@ export const ModernLiveStudio: React.FC = () => {
             </h4>
             <div className="space-y-4">
               {/* Chat Messages */}
-              <div className="bg-slate-900/50 rounded border border-slate-700 h-64 overflow-y-auto p-3 space-y-2">
-                {chatMessages.map(msg => (
+                <div className="bg-slate-900/50 rounded border border-slate-700 h-64 overflow-y-auto p-3 space-y-2">
+                {liveChatMessages.map(msg => (
                   <motion.div
                     key={msg.id}
                     initial={{ opacity: 0, x: -20 }}
@@ -499,7 +500,9 @@ export const ModernLiveStudio: React.FC = () => {
                     className="flex items-start justify-between gap-2 p-2 hover:bg-slate-800/50 rounded"
                   >
                     <div className="flex-1 min-w-0">
-                      <p className="text-xs font-semibold text-blue-400">{msg.user}</p>
+                      <p className={`text-xs font-semibold ${msg.role === 'admin' ? 'text-amber-400' : 'text-blue-400'}`}>
+                        {msg.user} {msg.role === 'admin' && '(Admin)'}
+                      </p>
                       <p className="text-sm text-foreground break-words">{msg.message}</p>
                     </div>
                     <Button
@@ -538,22 +541,36 @@ export const ModernLiveStudio: React.FC = () => {
               Stream Settings
             </h4>
             <div className="space-y-4">
-              <div>
-                <label className="text-sm font-semibold text-foreground mb-2 block">Stream Title</label>
-                <Input
-                  value={streamTitle}
-                  onChange={(e) => setStreamTitle(e.target.value)}
-                  disabled={isLive}
-                />
-              </div>
-              <div>
-                <label className="text-sm font-semibold text-foreground mb-2 block">Description</label>
-                <Input
-                  value={streamDescription}
-                  onChange={(e) => setStreamDescription(e.target.value)}
-                  disabled={isLive}
-                />
-              </div>
+	              <div>
+	                <label className="text-sm font-semibold text-foreground mb-2 block">Stream Title</label>
+	                <div className="flex gap-2">
+	                  <Input
+	                    value={streamTitle}
+	                    onChange={(e) => setStreamTitle(e.target.value)}
+	                    placeholder="Enter stream title..."
+	                  />
+	                  {isLive && (
+	                    <Button size="sm" onClick={() => updateBroadcast(streamTitle, streamDescription)}>
+	                      Update
+	                    </Button>
+	                  )}
+	                </div>
+	              </div>
+	              <div>
+	                <label className="text-sm font-semibold text-foreground mb-2 block">Description</label>
+	                <div className="flex gap-2">
+	                  <Input
+	                    value={streamDescription}
+	                    onChange={(e) => setStreamDescription(e.target.value)}
+	                    placeholder="Enter stream description..."
+	                  />
+	                  {isLive && (
+	                    <Button size="sm" onClick={() => updateBroadcast(streamTitle, streamDescription)}>
+	                      Update
+	                    </Button>
+	                  )}
+	                </div>
+	              </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="text-sm font-semibold text-foreground mb-2 block">Quality</label>

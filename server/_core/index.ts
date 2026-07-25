@@ -60,6 +60,15 @@ async function startServer() {
     console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
   }
 
+  // Initialize MongoDB connection on startup
+  try {
+    const { connectToMongo } = await import("../mongoConnection");
+    await connectToMongo();
+  } catch (error) {
+    console.warn("[Server] MongoDB connection failed on startup:", error);
+    console.warn("[Server] Continuing server startup — DB queries will attempt reconnection");
+  }
+
   server.listen(port, () => {
     console.log(`Server running on http://localhost:${port}/`);
   });

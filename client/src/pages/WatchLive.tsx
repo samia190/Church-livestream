@@ -1,6 +1,7 @@
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Radio, Users, Clock, Share2, Heart, MessageCircle, Play, Volume2, VolumeX } from 'lucide-react';
+import { Radio, Users, Clock, Share2, Heart, MessageCircle, Play, Volume2, VolumeX, Send } from 'lucide-react';
+
 import { Link } from 'wouter';
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
@@ -8,10 +9,24 @@ import Navigation from '@/components/Navigation';
 import { useViewer } from '@/hooks/useViewer';
 import { toast } from 'sonner';
 
+
+
 export default function WatchLive() {
-  const { remoteStream, meta } = useViewer();
+  const { remoteStream, meta, chatMessages, sendChatMessage } = useViewer();
   const videoRef = useRef<HTMLVideoElement>(null);
   const [muted, setMuted] = useState(true);
+  const [chatInput, setChatInput] = useState("");
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatMessages]);
+
+  const handleSendChat = () => {
+    if (!chatInput.trim()) return;
+    sendChatMessage(chatInput, "Viewer");
+    setChatInput("");
+  };
 
   useEffect(() => {
     if (videoRef.current) {
@@ -178,46 +193,132 @@ export default function WatchLive() {
           </div>
         </motion.div>
 
-        {/* Stream Info */}
-        <motion.div variants={itemVariants} className="grid md:grid-cols-3 gap-6 mb-12">
-          <div className="md:col-span-2">
-            <h2 className="text-3xl font-bold mb-2">{streamTitle}</h2>
-            <p className="text-muted-foreground mb-6">{streamDescription}</p>
+        {/* Stream Info & Chat */}
+        <motion.div variants={itemVariants} className="grid lg:grid-cols-3 gap-8 mb-12">
+          <div className="lg:col-span-2">
+            <div className="glass-panel p-8 mb-8">
+              <h2 className="text-3xl font-bold mb-4">{streamTitle}</h2>
+              <p className="text-muted-foreground mb-8 text-lg leading-relaxed">{streamDescription}</p>
 
-            <div className="flex flex-wrap gap-3">
-              <Button className="bg-ember hover:bg-ember/90 text-ember-foreground gap-2 font-semibold">
-                <Heart className="w-4 h-4" />
-                Like
-              </Button>
-              <Button variant="outline" className="border-primary/50 hover:bg-primary/10 gap-2" onClick={handleShare}>
-                <Share2 className="w-4 h-4" />
-                Share
-              </Button>
-              <Link href="/prayer">
-                <Button variant="outline" className="border-primary/50 hover:bg-primary/10 gap-2">
-                  <MessageCircle className="w-4 h-4" />
-                  Prayer Request
+              <div className="flex flex-wrap gap-4">
+                <Button className="bg-ember hover:bg-ember/90 text-ember-foreground gap-2 px-6 py-6 h-auto text-lg font-bold">
+                  <Heart className="w-5 h-5" />
+                  Like
                 </Button>
-              </Link>
+                <Button variant="outline" className="border-primary/50 hover:bg-primary/10 gap-2 px-6 py-6 h-auto text-lg font-semibold" onClick={handleShare}>
+                  <Share2 className="w-5 h-5" />
+                  Share
+                </Button>
+                <Link href="/prayer">
+                  <Button variant="outline" className="border-primary/50 hover:bg-primary/10 gap-2 px-6 py-6 h-auto text-lg font-semibold">
+                    <MessageCircle className="w-5 h-5" />
+                    Prayer Request
+                  </Button>
+                </Link>
+              </div>
+            </div>
+
+            {/* Stream Stats (Mobile/Tablet) */}
+            <div className="lg:hidden grid grid-cols-2 gap-4 mb-8">
+               <div className="glass-panel p-4 flex flex-col items-center justify-center text-center">
+                 <p className="text-sm text-muted-foreground mb-1 font-mono uppercase tracking-wider">Status</p>
+                 <p className={`text-xl font-black ${isLive ? 'text-signal' : 'text-muted-foreground'}`}>
+                   {isLive ? 'LIVE' : 'OFFLINE'}
+                 </p>
+               </div>
+               <div className="glass-panel p-4 flex flex-col items-center justify-center text-center">
+                 <p className="text-sm text-muted-foreground mb-1 font-mono uppercase tracking-wider">Viewers</p>
+                 <p className="text-xl font-black text-ember">{meta.viewers.toLocaleString()}</p>
+               </div>
             </div>
           </div>
 
-          {/* Stream Stats */}
-          <motion.div variants={itemVariants} className="glass-panel p-6">
-            <h3 className="font-bold mb-4">Stream Status</h3>
-            <div className="space-y-3">
-              <div className="flex justify-between items-center">
-                <span className="text-muted-foreground">Status</span>
-                <span className={`font-bold ${isLive ? 'text-signal' : 'text-muted-foreground'}`}>
-                  {isLive ? 'LIVE' : 'Offline'}
-                </span>
+          {/* Sidebar: Chat & Stats */}
+          <div className="space-y-6">
+            {/* Live Chat */}
+            <div className="glass-panel flex flex-col h-[500px] border-primary/20">
+              <div className="p-4 border-b border-primary/20 flex items-center justify-between bg-primary/5">
+                <h3 className="font-bold flex items-center gap-2">
+                  <MessageCircle className="w-4 h-4 text-ember" />
+                  Live Chat
+                </h3>
+                <div className="flex items-center gap-1.5 text-xs font-mono text-muted-foreground">
+                  <div className="w-2 h-2 rounded-full bg-signal" />
+                  Connected
+                </div>
               </div>
-              <div className="flex justify-between items-center">
-                <span className="text-muted-foreground">Watching Now</span>
-                <span className="text-ember font-bold">{meta.viewers.toLocaleString()}</span>
+              
+              <div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin scrollbar-thumb-primary/20">
+                {chatMessages.length === 0 ? (
+                  <div className="h-full flex flex-col items-center justify-center text-center opacity-40">
+                    <MessageCircle className="w-12 h-12 mb-2" />
+                    <p className="text-sm">Welcome to the live chat!</p>
+                  </div>
+                ) : (
+                  chatMessages.map((msg) => (
+                    <div key={msg.id} className="flex flex-col gap-1">
+                      <div className="flex items-baseline gap-2">
+                        <span className={`text-xs font-bold ${msg.role === 'admin' ? 'text-ember' : 'text-primary'}`}>
+                          {msg.user}
+                        </span>
+                        <span className="text-[10px] text-muted-foreground font-mono">
+                          {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      </div>
+                      <p className="text-sm bg-primary/5 p-2 rounded-lg border border-primary/10">
+                        {msg.message}
+                      </p>
+                    </div>
+                  ))
+                )}
+                <div ref={chatEndRef} />
+              </div>
+
+              <div className="p-4 border-t border-primary/20 bg-primary/5">
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onKeyPress={(e) => e.key === 'Enter' && handleSendChat()}
+                    placeholder="Say something..."
+                    className="flex-1 bg-void border border-primary/30 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary transition-colors"
+                  />
+                  <Button size="sm" onClick={handleSendChat} className="bg-primary hover:bg-primary/90">
+                    <Send className="w-4 h-4" />
+                  </Button>
+                </div>
               </div>
             </div>
-          </motion.div>
+
+            {/* Desktop Stats */}
+            <div className="hidden lg:block glass-panel p-6 border-primary/20">
+              <h3 className="font-bold mb-4 flex items-center gap-2">
+                <Radio className="w-4 h-4 text-ember" />
+                Stream Stats
+              </h3>
+              <div className="space-y-4">
+                <div className="flex justify-between items-center p-3 bg-primary/5 rounded-lg border border-primary/10">
+                  <span className="text-sm text-muted-foreground font-mono uppercase tracking-wider">Status</span>
+                  <span className={`text-sm font-black ${isLive ? 'text-signal' : 'text-muted-foreground'}`}>
+                    {isLive ? 'LIVE' : 'OFFLINE'}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center p-3 bg-primary/5 rounded-lg border border-primary/10">
+                  <span className="text-sm text-muted-foreground font-mono uppercase tracking-wider">Viewers</span>
+                  <span className="text-sm font-black text-ember">{meta.viewers.toLocaleString()}</span>
+                </div>
+                {isLive && meta.startTime > 0 && (
+                   <div className="flex justify-between items-center p-3 bg-primary/5 rounded-lg border border-primary/10">
+                    <span className="text-sm text-muted-foreground font-mono uppercase tracking-wider">Uptime</span>
+                    <span className="text-sm font-black text-primary font-mono">
+                      {Math.floor((Date.now() - meta.startTime) / 60000)}m
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
         </motion.div>
 
         {/* Upcoming Services */}
@@ -262,7 +363,7 @@ export default function WatchLive() {
           <div className="grid md:grid-cols-4 gap-6">
             {recentSermons.map((sermon) => (
               <motion.div
-                key={sermon.id}
+                key={sermon.id || sermon.title}
                 className="tilt-card glass-panel overflow-hidden cursor-pointer"
               >
                 <div className="aspect-video relative overflow-hidden group">

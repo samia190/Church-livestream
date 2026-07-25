@@ -30,6 +30,7 @@ export function useViewer() {
   const [connected, setConnected] = useState(false);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [meta, setMeta] = useState<StreamMeta>(EMPTY_META);
+  const [chatMessages, setChatMessages] = useState<any[]>([]);
 
   const teardownPeer = useCallback(() => {
     pcRef.current?.close();
@@ -113,6 +114,20 @@ export function useViewer() {
           teardownPeer();
           break;
 
+        case "chat-message":
+          setChatMessages(prev => [...prev, {
+            id: msg.id,
+            user: msg.user,
+            message: msg.message,
+            timestamp: new Date(msg.timestamp),
+            role: msg.role
+          }]);
+          break;
+
+        case "chat-message-deleted":
+          setChatMessages(prev => prev.filter(m => m.id !== msg.messageId));
+          break;
+
         default:
           break;
       }
@@ -140,5 +155,15 @@ export function useViewer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [createPeerConnection, teardownPeer]);
 
-  return { connected, remoteStream, meta };
+  const sendChatMessage = useCallback((message: string, user: string = "Viewer") => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: "chat-message",
+        message,
+        user
+      }));
+    }
+  }, []);
+
+  return { connected, remoteStream, meta, chatMessages, sendChatMessage };
 }
