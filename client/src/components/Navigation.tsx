@@ -56,7 +56,7 @@ export default function Navigation() {
             <Link href="/" className="flex items-center gap-3">
               <div className="w-11 h-11 rounded-full glow-ring flex items-center justify-center overflow-hidden bg-card">
                 <img 
-                  src="/manus-storage/nica-logo_37f1174c.png" 
+                  src="/logo/logo.png" 
                   alt="NICA Logo" 
                   className="w-9 h-9 object-contain"
                   onError={(e) => {
