@@ -54,11 +54,11 @@ export default function Navigation() {
             className="flex items-center gap-3"
           >
             <Link href="/" className="flex items-center gap-3">
-              <div className="w-11 h-11 rounded-full glow-ring flex items-center justify-center overflow-hidden bg-card">
+              <div className="w-30 h-30 rounded-full glow-ring flex items-center justify-center overflow-hidden bg-card">
                 <img 
                   src="/logo/logo.png" 
                   alt="NICA Logo" 
-                  className="w-9 h-9 object-contain"
+                  className="w-30 h-30 object-contain"
                   onError={(e) => {
                     // Fallback to a placeholder or text if the storage proxy fails
                     e.currentTarget.src = "https://ui-avatars.com/api/?name=NICA&background=0a0714&color=f59e0b";

@@ -28,9 +28,21 @@ const itemVariants = {
 
 const floatingVariants = {
   animate: {
-    y: [0, -20, 0],
+    x: [
+      0, 0, 0, 0,
+      -150, -75, 0,
+      75, 150, 75, 0
+    ],
+    y: [
+      150, 75, 0, -150,
+      0, 0, 0,
+      0, 0, 0, 150
+    ],
+    rotate: [0, 3, 0, -3, 0],
+    scale: [1, 1, 1, 1, 1],
     transition: {
-      duration: 3,
+      duration: 14,
+      ease: "easeInOut",
       repeat: Infinity,
     },
   },
@@ -76,9 +88,9 @@ export default function Home() {
             animate="animate"
             className="mb-8"
           >
-            <div className="w-32 h-32 mx-auto rounded-full bg-gradient-to-br from-ember via-primary to-ember p-[2px] glow-ring flex items-center justify-center">
+            <div className="w-36 h-36 mx-auto rounded-full bg-gradient-to-br from-ember via-primary to-ember p-[3px] glow-ring flex items-center justify-center">
               <div className="w-full h-full rounded-full bg-card/95 flex items-center justify-center overflow-hidden">
-                <img src="/logo/logo.png" alt="NICA Logo" className="w-28 h-28 object-contain" />
+                <img src="/logo/logo.png" alt="NICA Logo" className="w-36 h-36 object-contain" />
               </div>
             </div>
           </motion.div>
