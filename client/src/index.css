@@ -1,0 +1,324 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-ember: var(--ember);
+  --color-ember-foreground: var(--ember-foreground);
+  --color-signal: var(--signal);
+  --color-void: var(--void);
+  --font-sans: var(--font-body);
+  --font-display: var(--font-display);
+  --font-mono: var(--font-mono);
+}
+
+:root {
+  --primary: oklch(0.62 0.23 288);
+  --primary-foreground: oklch(0.98 0.01 90);
+  --sidebar-primary: oklch(0.58 0.25 288);
+  --sidebar-primary-foreground: oklch(0.98 0.01 90);
+  --chart-1: oklch(0.78 0.16 70);
+  --chart-2: oklch(0.62 0.23 288);
+  --chart-3: oklch(0.68 0.19 195);
+  --chart-4: oklch(0.55 0.26 288);
+  --chart-5: oklch(0.50 0.28 288);
+  --radius: 0.75rem;
+  --background: oklch(0.07 0.02 285);
+  --foreground: oklch(0.96 0.01 90);
+  --card: oklch(0.13 0.025 285);
+  --card-foreground: oklch(0.94 0.01 90);
+  --popover: oklch(0.13 0.025 285);
+  --popover-foreground: oklch(0.94 0.01 90);
+  --secondary: oklch(0.48 0.26 288);
+  --secondary-foreground: oklch(0.98 0.01 90);
+  --muted: oklch(0.20 0.03 285);
+  --muted-foreground: oklch(0.68 0.03 260);
+  --accent: oklch(0.78 0.16 70);
+  --accent-foreground: oklch(0.13 0.03 285);
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
+  --border: oklch(0.24 0.045 285);
+  --input: oklch(0.16 0.035 285);
+  --ring: oklch(0.62 0.23 288);
+  --sidebar: oklch(0.13 0.025 285);
+  --sidebar-foreground: oklch(0.94 0.01 90);
+  --sidebar-accent: oklch(0.78 0.16 70);
+  --sidebar-accent-foreground: oklch(0.13 0.03 285);
+  --sidebar-border: oklch(0.24 0.045 285);
+  --sidebar-ring: oklch(0.62 0.23 288);
+
+  /* Signature accents beyond the shadcn set: dawn ember + tech signal + deep void */
+  --ember: oklch(0.78 0.16 70);
+  --ember-foreground: oklch(0.13 0.03 285);
+  --signal: oklch(0.68 0.19 195);
+  --void: oklch(0.05 0.015 285);
+
+  --font-display: "Space Grotesk", "Manrope", sans-serif;
+  --font-body: "Manrope", "Inter", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+.dark {
+  --primary: oklch(0.62 0.23 288);
+  --primary-foreground: oklch(0.98 0.01 90);
+  --sidebar-primary: oklch(0.58 0.25 288);
+  --sidebar-primary-foreground: oklch(0.98 0.01 90);
+  --background: oklch(0.07 0.02 285);
+  --foreground: oklch(0.96 0.01 90);
+  --card: oklch(0.13 0.025 285);
+  --card-foreground: oklch(0.94 0.01 90);
+  --popover: oklch(0.13 0.025 285);
+  --popover-foreground: oklch(0.94 0.01 90);
+  --secondary: oklch(0.48 0.26 288);
+  --secondary-foreground: oklch(0.98 0.01 90);
+  --muted: oklch(0.20 0.03 285);
+  --muted-foreground: oklch(0.68 0.03 260);
+  --accent: oklch(0.78 0.16 70);
+  --accent-foreground: oklch(0.13 0.03 285);
+  --destructive: oklch(0.704 0.191 22.216);
+  --destructive-foreground: oklch(0.985 0 0);
+  --border: oklch(0.24 0.045 285);
+  --input: oklch(0.16 0.035 285);
+  --ring: oklch(0.62 0.23 288);
+  --chart-1: oklch(0.78 0.16 70);
+  --chart-2: oklch(0.62 0.23 288);
+  --chart-3: oklch(0.68 0.19 195);
+  --chart-4: oklch(0.55 0.26 288);
+  --chart-5: oklch(0.50 0.28 288);
+  --sidebar: oklch(0.13 0.025 285);
+  --sidebar-foreground: oklch(0.94 0.01 90);
+  --sidebar-accent: oklch(0.78 0.16 70);
+  --sidebar-accent-foreground: oklch(0.98 0.01 90);
+  --sidebar-border: oklch(0.24 0.045 285);
+  --sidebar-ring: oklch(0.62 0.23 288);
+
+  --ember: oklch(0.78 0.16 70);
+  --ember-foreground: oklch(0.13 0.03 285);
+  --signal: oklch(0.68 0.19 195);
+  --void: oklch(0.05 0.015 285);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground font-sans;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-display);
+    letter-spacing: -0.02em;
+  }
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  [type="button"]:not(:disabled),
+  [type="submit"]:not(:disabled),
+  [type="reset"]:not(:disabled),
+  a[href],
+  select:not(:disabled),
+  input[type="checkbox"]:not(:disabled),
+  input[type="radio"]:not(:disabled) {
+    @apply cursor-pointer;
+  }
+}
+
+@layer components {
+  /**
+   * Custom container utility that centers content and adds responsive padding.
+   *
+   * This overrides Tailwind's default container behavior to:
+   * - Auto-center content (mx-auto)
+   * - Add responsive horizontal padding
+   * - Set max-width for large screens
+   *
+   * Usage: <div className="container">...</div>
+   *
+   * For custom widths, use max-w-* utilities directly:
+   * <div className="max-w-6xl mx-auto px-4">...</div>
+   */
+  .container {
+    width: 100%;
+    margin-left: auto;
+    margin-right: auto;
+    padding-left: 1rem; /* 16px - mobile padding */
+    padding-right: 1rem;
+  }
+
+  .flex {
+    min-height: 0;
+    min-width: 0;
+  }
+
+  @media (min-width: 640px) {
+    .container {
+      padding-left: 1.5rem; /* 24px - tablet padding */
+      padding-right: 1.5rem;
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .container {
+      padding-left: 2rem; /* 32px - desktop padding */
+      padding-right: 2rem;
+      max-width: 1280px; /* Standard content width */
+    }
+  }
+}
+
+
+/* Accessibility: Respect user's motion preferences */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Focus visible for keyboard navigation */
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* Improve text rendering */
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Ensure interactive elements are keyboard accessible */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* =============================================================
+   Signature system: "Radiant Core" — dawn-ember light over a
+   deep violet night sky. Used across the site for the
+   3D / futuristic visual language.
+   ============================================================= */
+
+/* Eyebrow / label text — console-like structural markers */
+.label-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--ember);
+}
+
+/* Glowing gradient headline text (violet → ember) */
+.text-glow {
+  background: linear-gradient(120deg, var(--ember) 0%, var(--primary) 55%, var(--signal) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Glass panel — the core card/surface treatment site-wide */
+.glass-panel {
+  position: relative;
+  background: color-mix(in oklch, var(--card) 62%, transparent);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid color-mix(in oklch, var(--border) 80%, transparent);
+  border-radius: var(--radius-xl);
+}
+
+.glass-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(135deg, color-mix(in oklch, var(--ember) 70%, transparent), transparent 40%, color-mix(in oklch, var(--primary) 60%, transparent));
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  opacity: 0.6;
+}
+
+/* 3D hover tilt for cards — cheap, GPU-friendly depth cue */
+.tilt-card {
+  transform-style: preserve-3d;
+  perspective: 1000px;
+  transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.4s ease;
+}
+.tilt-card:hover {
+  transform: translateY(-6px) rotateX(2deg) rotateY(-2deg);
+  box-shadow: 0 24px 60px -20px color-mix(in oklch, var(--primary) 45%, transparent);
+}
+
+/* Faint orbiting grid — ambient texture bridging flat sections to the 3D hero */
+.orbit-grid {
+  background-image:
+    radial-gradient(circle at 50% 50%, color-mix(in oklch, var(--primary) 18%, transparent) 0%, transparent 60%),
+    repeating-linear-gradient(0deg, color-mix(in oklch, var(--border) 60%, transparent) 0px, transparent 1px 64px),
+    repeating-linear-gradient(90deg, color-mix(in oklch, var(--border) 60%, transparent) 0px, transparent 1px 64px);
+  background-size: 100% 100%, 64px 64px, 64px 64px;
+}
+
+/* Diagonal slant divider between major sections — angular, not a plain rule */
+.divider-slant {
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 3vw), 0 100%);
+}
+.divider-slant-rev {
+  clip-path: polygon(0 3vw, 100% 0, 100% 100%, 0 100%);
+}
+
+/* Ember glow ring used behind key icons/badges */
+.glow-ring {
+  box-shadow: 0 0 0 1px color-mix(in oklch, var(--ember) 50%, transparent), 0 0 40px -8px color-mix(in oklch, var(--ember) 70%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tilt-card:hover {
+    transform: none;
+  }
+}
