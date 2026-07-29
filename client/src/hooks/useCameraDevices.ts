@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 export interface CameraDeviceOption {
   deviceId: string;
   label: string;
+  isCapturing: boolean; // true if this device currently has an active stream
 }
 
 /**
@@ -29,6 +30,8 @@ export function useCameraDevices() {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [isMobile, setIsMobile] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanProgress, setScanProgress] = useState(0);
   const streamRef = useRef<MediaStream | null>(null);
 
   useEffect(() => {
@@ -36,22 +39,52 @@ export function useCameraDevices() {
     setIsMobile(/Android|iPhone|iPad|iPod/i.test(ua));
   }, []);
 
-  const refreshDevices = useCallback(async () => {
+  const refreshDevices = useCallback(async (withProgress = false) => {
+    if (withProgress) setIsScanning(true);
+
+    // Simulate scanning phases for visual feedback
+    const phases = [
+      { progress: 15, message: "Initializing..." },
+      { progress: 30, message: "Detecting USB devices..." },
+      { progress: 50, message: "Checking HDMI capture cards..." },
+      { progress: 70, message: "Enumerating video inputs..." },
+      { progress: 90, message: "Resolving device labels..." },
+      { progress: 100, message: "Scan complete" },
+    ];
+
+    for (const phase of phases) {
+      setScanProgress(phase.progress);
+      await new Promise(r => setTimeout(r, withProgress ? 250 : 0));
+    }
+
     try {
       const all = await navigator.mediaDevices.enumerateDevices();
       const videoInputs = all
         .filter(d => d.kind === "videoinput")
-        .map((d, i) => ({ deviceId: d.deviceId, label: d.label || `Camera ${i + 1}` }));
+        .map((d, i) => ({
+          deviceId: d.deviceId,
+          label: d.label || `Camera ${i + 1}`,
+          isCapturing: streamRef.current?.getVideoTracks().some(t => t.getSettings().deviceId === d.deviceId) || false,
+        }));
       setDevices(videoInputs);
+
+      if (withProgress) {
+        // Small delay to show "complete" state
+        await new Promise(r => setTimeout(r, 300));
+        setIsScanning(false);
+        setScanProgress(0);
+      }
     } catch (err) {
       console.error("[Camera] Failed to enumerate devices:", err);
+      setIsScanning(false);
+      setScanProgress(0);
     }
   }, []);
 
   useEffect(() => {
     refreshDevices();
-    navigator.mediaDevices.addEventListener?.("devicechange", refreshDevices);
-    return () => navigator.mediaDevices.removeEventListener?.("devicechange", refreshDevices);
+    navigator.mediaDevices.addEventListener?.("devicechange", () => refreshDevices());
+    return () => navigator.mediaDevices.removeEventListener?.("devicechange", () => refreshDevices());
   }, [refreshDevices]);
 
   const stopCurrentStream = useCallback(() => {
@@ -76,12 +109,11 @@ export function useCameraDevices() {
   const start = useCallback(async () => {
     try {
       return await acquireStream({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 } }, // More conservative default for better compatibility
+        video: { width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: true,
       });
     } catch (err: any) {
       console.error("[Camera] Failed to start camera:", err);
-      // If 720p fails, try basic constraints
       try {
         return await acquireStream({ video: true, audio: true });
       } catch (innerErr: any) {
@@ -114,8 +146,6 @@ export function useCameraDevices() {
       setSelectedDeviceId(null);
       return newStream;
     } catch {
-      // Some browsers reject `exact` if only one camera is present; retry
-      // with a soft preference instead of hard-failing the switch.
       const newStream = await acquireStream({
         video: { facingMode: nextFacing, width: { ideal: 1920 }, height: { ideal: 1080 } },
         audio: true,
@@ -138,6 +168,8 @@ export function useCameraDevices() {
     isMobile,
     stream,
     error,
+    isScanning,
+    scanProgress,
     start,
     switchToDevice,
     flipFacing,

@@ -146,7 +146,7 @@ export const streamingSessions = mysqlTable('streamingSessions', {
   status: mysqlEnum('status', ['scheduled', 'live', 'ended', 'archived']).default('scheduled').notNull(),
   startTime: timestamp('startTime').notNull(),
   endTime: timestamp('endTime'),
-  streamKey: varchar('streamKey', { length: 255 }).unique(),
+  streamKey: varchar('streamKey', { length: 255 }), // Removed unique constraint — multiple sessions can have null streamKey
   rtmpUrl: text('rtmpUrl'),
   isPublished: int('isPublished').default(0).notNull(),
   recordingUrl: text('recordingUrl'),

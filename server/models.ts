@@ -264,7 +264,7 @@ const StreamingSessionSchema = new Schema<IStreamingSession>(
     },
     startTime: { type: Date, required: true },
     endTime: { type: Date, default: null },
-    streamKey: { type: String, default: null, unique: true },
+    streamKey: { type: String, default: null }, // Removed unique constraint — multiple sessions can have null streamKey
     rtmpUrl: { type: String, default: null },
     isPublished: { type: Boolean, default: false },
     recordingUrl: { type: String, default: null },
