@@ -17,32 +17,23 @@ interface MixerTrack {
   muted: boolean;
   level: number;
   peakLevel: number;
-  gainNode?: GainNode;
-  analyser?: AnalyserNode;
 }
 
 interface AudioEffects {
-  // EQ bands (Hz)
-  bass: number;       // 60Hz
-  lowMid: number;     // 250Hz
-  mid: number;        // 1kHz
-  highMid: number;    // 4kHz
-  treble: number;     // 12kHz
-
-  // Dynamics
+  bass: number;
+  lowMid: number;
+  mid: number;
+  highMid: number;
+  treble: number;
   compressorThreshold: number;
   compressorRatio: number;
   compressorAttack: number;
   compressorRelease: number;
-
-  // Effects
   reverbMix: number;
   reverbDecay: number;
   delayTime: number;
   delayFeedback: number;
   delayMix: number;
-
-  // Master
   limiterThreshold: number;
 }
 
@@ -68,16 +59,20 @@ interface ProfessionalAudioMixerProps {
   mediaStream?: MediaStream | null;
   onVolumeChange?: (trackId: string, volume: number) => void;
   onMuteChange?: (trackId: string, muted: boolean) => void;
+  /** Callback that receives the processed output stream (audio only) for broadcasting */
+  onProcessedStream?: (stream: MediaStream | null) => void;
 }
 
 export default function ProfessionalAudioMixer({
   mediaStream,
   onVolumeChange,
   onMuteChange,
+  onProcessedStream,
 }: ProfessionalAudioMixerProps) {
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const destinationRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  const trackGainNodeRef = useRef<GainNode | null>(null);
 
   // Effect nodes refs
   const bassNodeRef = useRef<BiquadFilterNode | null>(null);
@@ -96,12 +91,12 @@ export default function ProfessionalAudioMixer({
   const limiterNodeRef = useRef<DynamicsCompressorNode | null>(null);
   const masterGainRef = useRef<GainNode | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
-  const frequencyDataRef = useRef<Uint8Array | null>(null);
+  const frequencyDataRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
   const animFrameRef = useRef<number>(0);
 
   const [tracks, setTracks] = useState<MixerTrack[]>([
-    { id: "mic", name: "Microphone", icon: <Mic className="w-4 h-4" />, volume: 80, muted: false, level: 0, peakLevel: 0 },
-    { id: "music", name: "Music", icon: <Music className="w-4 h-4" />, volume: 50, muted: false, level: 0, peakLevel: 0 },
+    { id: "mic", name: "Microphone", icon: <Mic className="w-4 h-4" />, volume: 100, muted: false, level: 0, peakLevel: 0 },
+    { id: "music", name: "Music", icon: <Music className="w-4 h-4" />, volume: 75, muted: false, level: 0, peakLevel: 0 },
     { id: "system", name: "System", icon: <Monitor className="w-4 h-4" />, volume: 60, muted: false, level: 0, peakLevel: 0 },
   ]);
 
@@ -114,206 +109,227 @@ export default function ProfessionalAudioMixer({
     channels: 2,
     latency: "",
   });
+  const [graphInitialized, setGraphInitialized] = useState(false);
 
-  // Initialize audio graph
+  // Initialize audio graph when mediaStream changes
   useEffect(() => {
     if (!mediaStream) {
-      // No stream — show mock levels
       return;
     }
 
-    if (!audioContextRef.current) {
-      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      audioContextRef.current = ctx;
-
-      // Create destination for processed output
-      const dest = ctx.createMediaStreamDestination();
-      destinationRef.current = dest;
-
-      // === EQ Chain ===
-      const bass = ctx.createBiquadFilter();
-      bass.type = "lowshelf";
-      bass.frequency.value = 60;
-      bass.Q.value = 1;
-      bass.gain.value = effects.bass;
-      bassNodeRef.current = bass;
-
-      const lowMid = ctx.createBiquadFilter();
-      lowMid.type = "peaking";
-      lowMid.frequency.value = 250;
-      lowMid.Q.value = 1.2;
-      lowMid.gain.value = effects.lowMid;
-      lowMidNodeRef.current = lowMid;
-
-      const mid = ctx.createBiquadFilter();
-      mid.type = "peaking";
-      mid.frequency.value = 1000;
-      mid.Q.value = 1;
-      mid.gain.value = effects.mid;
-      midNodeRef.current = mid;
-
-      const highMid = ctx.createBiquadFilter();
-      highMid.type = "peaking";
-      highMid.frequency.value = 4000;
-      highMid.Q.value = 1;
-      highMid.gain.value = effects.highMid;
-      highMidNodeRef.current = highMid;
-
-      const treble = ctx.createBiquadFilter();
-      treble.type = "highshelf";
-      treble.frequency.value = 12000;
-      treble.Q.value = 1;
-      treble.gain.value = effects.treble;
-      trebleNodeRef.current = treble;
-
-      // === Compressor ===
-      const compressor = ctx.createDynamicsCompressor();
-      compressor.threshold.value = effects.compressorThreshold;
-      compressor.ratio.value = effects.compressorRatio;
-      compressor.attack.value = effects.compressorAttack;
-      compressor.release.value = effects.compressorRelease;
-      compressor.knee.value = 6;
-      compressorNodeRef.current = compressor;
-
-      // === Delay ===
-      const delay = ctx.createDelay(5);
-      delay.delayTime.value = effects.delayTime;
-      delayNodeRef.current = delay;
-
-      const delayFeedback = ctx.createGain();
-      delayFeedback.gain.value = effects.delayFeedback;
-      delayFeedbackNodeRef.current = delayFeedback;
-
-      const delayMix = ctx.createGain();
-      delayMix.gain.value = effects.delayMix;
-      delayMixNodeRef.current = delayMix;
-
-      const delayDry = ctx.createGain();
-      delayDry.gain.value = 1 - effects.delayMix;
-      delayDryNodeRef.current = delayDry;
-
-      // Delay routing
-      delay.connect(delayFeedback);
-      delayFeedback.connect(delay); // feedback loop
-      delay.connect(delayMix);
-
-      // === Reverb (synthetic impulse response) ===
-      const reverb = ctx.createConvolver();
-      // Create a synthetic reverb impulse
-      const rate = ctx.sampleRate;
-      const length = rate * effects.reverbDecay;
-      const impulse = ctx.createBuffer(2, length, rate);
-      for (let ch = 0; ch < 2; ch++) {
-        const channelData = impulse.getChannelData(ch);
-        for (let i = 0; i < length; i++) {
-          channelData[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, 2);
-        }
-      }
-      reverb.buffer = impulse;
-      reverbNodeRef.current = reverb;
-
-      const reverbMix = ctx.createGain();
-      reverbMix.gain.value = effects.reverbMix;
-      reverbMixNodeRef.current = reverbMix;
-
-      const reverbDry = ctx.createGain();
-      reverbDry.gain.value = 1 - effects.reverbMix;
-      reverbDryNodeRef.current = reverbDry;
-
-      // === Limiter ===
-      const limiter = ctx.createDynamicsCompressor();
-      limiter.threshold.value = effects.limiterThreshold;
-      limiter.ratio.value = 20;
-      limiter.attack.value = 0.001;
-      limiter.release.value = 0.01;
-      limiter.knee.value = 0;
-      limiterNodeRef.current = limiter;
-
-      // === Master Gain ===
-      const masterGain = ctx.createGain();
-      masterGain.gain.value = masterVolume / 100;
-      masterGainRef.current = masterGain;
-
-      // === Analyser ===
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 512;
-      analyser.smoothingTimeConstant = 0.8;
-      analyserRef.current = analyser;
-      frequencyDataRef.current = new Uint8Array(analyser.frequencyBinCount);
-
-      // === Source ===
-      const source = ctx.createMediaStreamSource(mediaStream);
-      sourceRef.current = source;
-
-      // Build the graph: source → EQ → compressor → [delay + reverb parallel] → limiter → master → analyser → destination
-      source.connect(bass);
-      bass.connect(lowMid);
-      lowMid.connect(mid);
-      mid.connect(highMid);
-      highMid.connect(treble);
-      treble.connect(compressor);
-
-      // After compressor, split to dry and effects
-      compressor.connect(delayDry);
-      compressor.connect(delay);
-      compressor.connect(reverbDry);
-      compressor.connect(reverb);
-
-      // Dry + delay
-      delayDry.connect(masterGain);
-      delayMix.connect(masterGain);
-
-      // Dry + reverb
-      reverbDry.connect(masterGain);
-      reverbMix.connect(masterGain);
-
-      // Master → limiter → analyser → destination
-      masterGain.connect(limiter);
-      limiter.connect(analyser);
-      analyser.connect(dest);
-
-      setAudioInfo({
-        sampleRate: ctx.sampleRate,
-        channels: mediaStream.getAudioTracks()[0]?.getSettings().channelCount || 2,
-        latency: `${(ctx.baseLatency * 1000).toFixed(1)}ms`,
-      });
+    // Check if there's actual audio to process
+    const audioTracks = mediaStream.getAudioTracks();
+    if (audioTracks.length === 0) {
+      console.log("[Mixer] No audio tracks in stream — running in visual-only mode");
+      return;
     }
 
-    // Start level metering
-    const meterLoop = () => {
-      if (!analyserRef.current || !frequencyDataRef.current) {
-        animFrameRef.current = requestAnimationFrame(meterLoop);
-        return;
+    try {
+      if (!audioContextRef.current) {
+        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        audioContextRef.current = ctx;
+
+        // === Create all nodes ===
+
+        // Track-level gain node (for mic volume/mute control)
+        const trackGain = ctx.createGain();
+        trackGain.gain.value = 1.0;
+        trackGainNodeRef.current = trackGain;
+
+        // EQ Chain
+        const bass = ctx.createBiquadFilter();
+        bass.type = "lowshelf";
+        bass.frequency.value = 60;
+        bass.gain.value = effects.bass;
+        bassNodeRef.current = bass;
+
+        const lowMid = ctx.createBiquadFilter();
+        lowMid.type = "peaking";
+        lowMid.frequency.value = 250;
+        lowMid.Q.value = 1.2;
+        lowMid.gain.value = effects.lowMid;
+        lowMidNodeRef.current = lowMid;
+
+        const mid = ctx.createBiquadFilter();
+        mid.type = "peaking";
+        mid.frequency.value = 1000;
+        mid.Q.value = 1;
+        mid.gain.value = effects.mid;
+        midNodeRef.current = mid;
+
+        const highMid = ctx.createBiquadFilter();
+        highMid.type = "peaking";
+        highMid.frequency.value = 4000;
+        highMid.Q.value = 1;
+        highMid.gain.value = effects.highMid;
+        highMidNodeRef.current = highMid;
+
+        const treble = ctx.createBiquadFilter();
+        treble.type = "highshelf";
+        treble.frequency.value = 12000;
+        treble.Q.value = 1;
+        treble.gain.value = effects.treble;
+        trebleNodeRef.current = treble;
+
+        // Compressor
+        const compressor = ctx.createDynamicsCompressor();
+        compressor.threshold.value = effects.compressorThreshold;
+        compressor.ratio.value = effects.compressorRatio;
+        compressor.attack.value = effects.compressorAttack;
+        compressor.release.value = effects.compressorRelease;
+        compressor.knee.value = 6;
+        compressorNodeRef.current = compressor;
+
+        // Delay
+        const delay = ctx.createDelay(5);
+        delay.delayTime.value = effects.delayTime;
+        delayNodeRef.current = delay;
+
+        const delayFeedback = ctx.createGain();
+        delayFeedback.gain.value = effects.delayFeedback;
+        delayFeedbackNodeRef.current = delayFeedback;
+
+        const delayMix = ctx.createGain();
+        delayMix.gain.value = effects.delayMix;
+        delayMixNodeRef.current = delayMix;
+
+        const delayDry = ctx.createGain();
+        delayDry.gain.value = 1 - effects.delayMix;
+        delayDryNodeRef.current = delayDry;
+
+        // Delay routing
+        delay.connect(delayFeedback);
+        delayFeedback.connect(delay);
+        delay.connect(delayMix);
+
+        // Reverb
+        const reverb = ctx.createConvolver();
+        const rate = ctx.sampleRate;
+        const length = rate * effects.reverbDecay;
+        const impulse = ctx.createBuffer(2, length, rate);
+        for (let ch = 0; ch < 2; ch++) {
+          const channelData = impulse.getChannelData(ch);
+          for (let i = 0; i < length; i++) {
+            channelData[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, 2);
+          }
+        }
+        reverb.buffer = impulse;
+        reverbNodeRef.current = reverb;
+
+        const reverbMix = ctx.createGain();
+        reverbMix.gain.value = effects.reverbMix;
+        reverbMixNodeRef.current = reverbMix;
+
+        const reverbDry = ctx.createGain();
+        reverbDry.gain.value = 1 - effects.reverbMix;
+        reverbDryNodeRef.current = reverbDry;
+
+        // Limiter
+        const limiter = ctx.createDynamicsCompressor();
+        limiter.threshold.value = effects.limiterThreshold;
+        limiter.ratio.value = 20;
+        limiter.attack.value = 0.001;
+        limiter.release.value = 0.01;
+        limiter.knee.value = 0;
+        limiterNodeRef.current = limiter;
+
+        // Master Gain
+        const masterGain = ctx.createGain();
+        masterGain.gain.value = masterVolume / 100;
+        masterGainRef.current = masterGain;
+
+        // Analyser
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 512;
+        analyser.smoothingTimeConstant = 0.8;
+        analyserRef.current = analyser;
+        frequencyDataRef.current = new Uint8Array(analyser.frequencyBinCount);
+
+        // Destination (processed output stream)
+        const dest = ctx.createMediaStreamDestination();
+        destinationRef.current = dest;
+
+        // Source
+        const source = ctx.createMediaStreamSource(mediaStream);
+        sourceRef.current = source;
+
+        // Build the graph: source → trackGain → EQ → compressor → [effects] → limiter → master → analyser → destination
+        source.connect(trackGain);
+        trackGain.connect(bass);
+        bass.connect(lowMid);
+        lowMid.connect(mid);
+        mid.connect(highMid);
+        highMid.connect(treble);
+        treble.connect(compressor);
+
+        // After compressor, split to dry and effects
+        compressor.connect(delayDry);
+        compressor.connect(delay);
+        compressor.connect(reverbDry);
+        compressor.connect(reverb);
+
+        delayDry.connect(masterGain);
+        delayMix.connect(masterGain);
+        reverbDry.connect(masterGain);
+        reverbMix.connect(masterGain);
+
+        // Master → limiter → analyser → destination
+        masterGain.connect(limiter);
+        limiter.connect(analyser);
+        analyser.connect(dest);
+
+        // Also connect to speakers for monitoring (admin can hear themselves)
+        analyser.connect(ctx.destination);
+
+        setAudioInfo({
+          sampleRate: ctx.sampleRate,
+          channels: audioTracks[0].getSettings().channelCount || 2,
+          latency: `${(ctx.baseLatency * 1000).toFixed(1)}ms`,
+        });
+
+        // Report the processed stream to parent
+        if (onProcessedStream) {
+          onProcessedStream(dest.stream);
+        }
+
+        setGraphInitialized(true);
       }
 
-      analyserRef.current.getByteFrequencyData(frequencyDataRef.current);
-      const data = Array.from(frequencyDataRef.current) as number[];
+      // Start level metering
+      const meterLoop = () => {
+        if (!analyserRef.current || !frequencyDataRef.current) {
+          animFrameRef.current = requestAnimationFrame(meterLoop);
+          return;
+        }
 
-      // Calculate overall level (RMS-like)
-      const sum = data.reduce((a, b) => a + b, 0);
-      const avg = sum / data.length;
-      const level = Math.min(100, (avg / 255) * 100 * 3); // boost for visibility
+        analyserRef.current.getByteFrequencyData(frequencyDataRef.current);
+        const data = Array.from(frequencyDataRef.current) as number[];
 
-      // Calculate peak (top 10%)
-      const sorted = [...data].sort((a, b) => b - a);
-      const peakChunk = sorted.slice(0, Math.floor(sorted.length * 0.1));
-      const peakAvg = peakChunk.reduce((a, b) => a + b, 0) / peakChunk.length;
-      const peak = Math.min(100, (peakAvg / 255) * 100 * 3);
+        const sum = data.reduce((a, b) => a + b, 0);
+        const avg = sum / data.length;
+        const level = Math.min(100, (avg / 255) * 100 * 3);
 
-      setTracks(prev => prev.map(t =>
-        t.id === "mic"
-          ? { ...t, level, peakLevel: Math.max(t.peakLevel * 0.95, peak) }
-          : t
-      ));
+        const sorted = [...data].sort((a, b) => b - a);
+        const peakChunk = sorted.slice(0, Math.floor(sorted.length * 0.1));
+        const peakAvg = peakChunk.reduce((a, b) => a + b, 0) / peakChunk.length;
+        const peak = Math.min(100, (peakAvg / 255) * 100 * 3);
 
+        setTracks(prev => prev.map(t =>
+          t.id === "mic"
+            ? { ...t, level, peakLevel: Math.max(t.peakLevel * 0.95, peak) }
+            : t
+        ));
+
+        animFrameRef.current = requestAnimationFrame(meterLoop);
+      };
       animFrameRef.current = requestAnimationFrame(meterLoop);
-    };
-    animFrameRef.current = requestAnimationFrame(meterLoop);
 
-    return () => {
-      cancelAnimationFrame(animFrameRef.current);
-      // Don't close audio context on every effect change — only on unmount
-    };
+      return () => {
+        cancelAnimationFrame(animFrameRef.current);
+      };
+    } catch (err) {
+      console.error("[Mixer] Failed to initialize audio graph:", err);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mediaStream]);
 
@@ -364,12 +380,33 @@ export default function ProfessionalAudioMixer({
     }
   }, [masterVolume, masterMuted]);
 
+  // Apply track gain (volume/mute for mic)
+  const applyTrackGain = useCallback(() => {
+    if (trackGainNodeRef.current) {
+      const micTrack = tracks.find(t => t.id === "mic");
+      if (micTrack) {
+        // Convert volume 0-100 to gain 0.0-1.0
+        const gainValue = micTrack.muted ? 0 : micTrack.volume / 100;
+        trackGainNodeRef.current.gain.value = gainValue;
+
+        // Also enable/disable the actual audio track
+        if (sourceRef.current?.mediaStream) {
+          const audioTracks = sourceRef.current.mediaStream.getAudioTracks();
+          audioTracks.forEach(track => {
+            track.enabled = !micTrack.muted;
+          });
+        }
+      }
+    }
+  }, [tracks]);
+
   useEffect(() => applyEQ(), [applyEQ]);
   useEffect(() => applyCompressor(), [applyCompressor]);
   useEffect(() => applyDelay(), [applyDelay]);
   useEffect(() => applyReverb(), [applyReverb]);
   useEffect(() => applyLimiter(), [applyLimiter]);
   useEffect(() => applyMasterVolume(), [applyMasterVolume]);
+  useEffect(() => applyTrackGain(), [applyTrackGain]);
 
   const toggleTrackMute = (id: string) => {
     setTracks(prev => prev.map(t =>
@@ -422,7 +459,6 @@ export default function ProfessionalAudioMixer({
           className="absolute left-0 right-0 h-[2px] bg-red-400/80 transition-all duration-200"
           style={{ bottom: `${peakLevel}%` }}
         />
-        {/* dB scale */}
         <div className="absolute -right-8 top-0 bottom-0 flex flex-col justify-between text-[8px] text-muted-foreground">
           <span>0</span>
           <span>-12</span>
@@ -474,7 +510,6 @@ export default function ProfessionalAudioMixer({
                 animate={{ opacity: 1, y: 0 }}
                 className="bg-slate-800/50 rounded-lg p-3 border border-slate-700/50"
               >
-                {/* Track header */}
                 <div className="text-center mb-3">
                   <div className="flex items-center justify-center gap-1.5 mb-1">
                     {track.icon}
@@ -485,12 +520,10 @@ export default function ProfessionalAudioMixer({
                   )}
                 </div>
 
-                {/* Level meter */}
                 <div className="flex items-end justify-center gap-1 mb-3">
                   <LevelMeter level={track.level} peakLevel={track.peakLevel} />
                 </div>
 
-                {/* Mute button */}
                 <button
                   onClick={() => toggleTrackMute(track.id)}
                   className={`w-full py-1.5 rounded text-xs font-bold transition-colors mb-3 ${
@@ -503,7 +536,6 @@ export default function ProfessionalAudioMixer({
                   {track.muted ? "UNMUTE" : "MUTE"}
                 </button>
 
-                {/* Volume slider */}
                 <div className="space-y-1">
                   <div className="text-center text-xs text-purple-300 font-mono">{track.volume}%</div>
                   <Slider
@@ -611,7 +643,7 @@ export default function ProfessionalAudioMixer({
                 <p className={`text-[10px] font-bold ${band.color} mb-1`}>{band.label}</p>
                 <p className="text-[10px] text-gray-500 mb-3">{band.hz}</p>
                 <Slider
-                  value={[effects[band.key] + 12]} // 0-24 maps to -12 to +12 dB
+                  value={[effects[band.key] + 12]}
                   onValueChange={([v]) => setEffects(prev => ({ ...prev, [band.key]: v - 12 }))}
                   min={0}
                   max={24}
@@ -632,7 +664,6 @@ export default function ProfessionalAudioMixer({
             ))}
           </div>
 
-          {/* Visual EQ curve indicator */}
           <div className="bg-slate-800/40 rounded-lg p-4 border border-slate-700/30">
             <p className="text-xs text-gray-400 mb-2">EQ Curve</p>
             <div className="h-20 flex items-end justify-around gap-1">
@@ -665,7 +696,6 @@ export default function ProfessionalAudioMixer({
           animate={{ opacity: 1 }}
           className="space-y-4"
         >
-          {/* Compressor */}
           <Card className="bg-gradient-to-br from-amber-900/20 to-slate-900/30 border-amber-500/20 p-5">
             <h4 className="font-bold text-white mb-4 flex items-center gap-2">
               <Activity className="w-4 h-4 text-amber-400" />
@@ -727,7 +757,6 @@ export default function ProfessionalAudioMixer({
             </div>
           </Card>
 
-          {/* Delay */}
           <Card className="bg-gradient-to-br from-cyan-900/20 to-slate-900/30 border-cyan-500/20 p-5">
             <h4 className="font-bold text-white mb-4 flex items-center gap-2">
               <Disc className="w-4 h-4 text-cyan-400" />
@@ -776,7 +805,6 @@ export default function ProfessionalAudioMixer({
             </div>
           </Card>
 
-          {/* Reverb */}
           <Card className="bg-gradient-to-br from-purple-900/20 to-slate-900/30 border-purple-500/20 p-5">
             <h4 className="font-bold text-white mb-4 flex items-center gap-2">
               <Headphones className="w-4 h-4 text-purple-400" />
@@ -821,7 +849,6 @@ export default function ProfessionalAudioMixer({
           animate={{ opacity: 1 }}
           className="space-y-4"
         >
-          {/* Master Volume */}
           <Card className="bg-gradient-to-br from-rose-900/20 to-slate-900/30 border-rose-500/20 p-6">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
@@ -851,7 +878,6 @@ export default function ProfessionalAudioMixer({
             </Button>
           </Card>
 
-          {/* Limiter */}
           <Card className="bg-gradient-to-br from-red-900/20 to-slate-900/30 border-red-500/20 p-5">
             <h4 className="font-bold text-white mb-4 flex items-center gap-2">
               <Activity className="w-4 h-4 text-red-400" />
@@ -873,7 +899,6 @@ export default function ProfessionalAudioMixer({
             </div>
           </Card>
 
-          {/* Quick Presets */}
           <Card className="bg-gradient-to-br from-slate-800/40 to-slate-900/30 border-slate-700/30 p-5">
             <h4 className="font-bold text-white mb-3">Quick Presets</h4>
             <div className="grid grid-cols-2 gap-2">

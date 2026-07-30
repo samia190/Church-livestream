@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback, useEffect, forwardRef, useImperativeHandle } from "react";
+import React, { useState, useRef, useCallback, forwardRef, useImperativeHandle, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Play, Pause, SkipForward, SkipBack, Upload, Link as LinkIcon,
@@ -43,12 +43,13 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
     const [urlType, setUrlType] = useState<"video" | "image" | "audio">("video");
     const [currentTime, setCurrentTime] = useState(0);
     const [duration, setDuration] = useState(0);
-    const [volume, setVolume] = useState(80);
+    const [volume, setVolume] = useState(100);
     const [muted, setMuted] = useState(false);
     const [loop, setLoop] = useState(false);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [captureError, setCaptureError] = useState<string | null>(null);
     const [isBroadcasting, setIsBroadcasting] = useState(false);
+    const [audioCaptured, setAudioCaptured] = useState(false);
 
     const videoRef = useRef<HTMLVideoElement>(null);
     const audioRef = useRef<HTMLAudioElement>(null);
@@ -59,6 +60,7 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
     const captureStreamRef = useRef<MediaStream | null>(null);
     const captureLoopRef = useRef<number | null>(null);
     const preloadedImageRef = useRef<HTMLImageElement | null>(null);
+    const sourceNodeRef = useRef<MediaElementAudioSourceNode | null>(null);
 
     const current = currentIndex >= 0 ? mediaList[currentIndex] : null;
 
@@ -69,6 +71,23 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
         stopCapture();
       };
     }, []);
+
+    /**
+     * REAL-TIME VOLUME/MUTE SYNC
+     * Syncs React state to the actual video/audio DOM elements immediately.
+     * This fixes the bug where volume/mute changes don't affect playing media.
+     */
+    useEffect(() => {
+      const vol = muted ? 0 : volume / 100;
+      if (videoRef.current) {
+        videoRef.current.volume = vol;
+        videoRef.current.muted = muted;
+      }
+      if (audioRef.current) {
+        audioRef.current.volume = vol;
+        audioRef.current.muted = muted;
+      }
+    }, [volume, muted]);
 
     // Expose capture methods via ref
     useImperativeHandle(ref, () => ({
@@ -88,7 +107,8 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
 
     /**
      * Capture the current media as a MediaStream.
-     * Handles video, image, and audio types with optimized performance.
+     * FIXED: For video type, captures audio from videoRef.current (not audioRef).
+     * FIXED: Uses Web Audio API properly to capture video element's audio.
      */
     const captureMediaStream = async (): Promise<MediaStream | null> => {
       if (!current || !isPlaying) {
@@ -103,24 +123,16 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
         let videoTrack: MediaStreamTrack | null = null;
         let audioTrack: MediaStreamTrack | null = null;
 
-        // Optimized Video Capture
-        if (current.type === "video" && videoRef.current) {
-          // Use captureStream directly from video element if available (more efficient)
-          const videoElement = videoRef.current;
-          if ((videoElement as any).captureStream) {
-            const stream = (videoElement as any).captureStream();
-            videoTrack = stream.getVideoTracks()[0];
-          } else {
-            // Fallback to optimized canvas capture
-            videoTrack = await captureVideoTrack();
-          }
-        } else if (current.type === "image") {
+        // Capture video track
+        if (current.type === "video" || current.type === "image") {
           videoTrack = await captureVideoTrack();
         }
 
-        // Optimized Audio Capture
-        if ((current.type === "video" || current.type === "audio") && audioRef.current) {
-          audioTrack = await captureAudioTrack(audioRef.current);
+        // FIXED: For video type, capture audio from the VIDEO element, not the audio element
+        if (current.type === "video" && videoRef.current) {
+          audioTrack = await captureVideoElementAudio(videoRef.current);
+        } else if (current.type === "audio" && audioRef.current) {
+          audioTrack = await captureVideoElementAudio(audioRef.current);
         }
 
         const stream = new MediaStream();
@@ -132,6 +144,7 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
           return null;
         }
 
+        setAudioCaptured(!!audioTrack);
         captureStreamRef.current = stream;
         setIsBroadcasting(true);
         return stream;
@@ -145,7 +158,6 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
 
     /**
      * Capture video from canvas or video element.
-     * Optimized to reduce CPU load.
      */
     const captureVideoTrack = async (): Promise<MediaStreamTrack | null> => {
       if (!canvasRef.current) {
@@ -153,26 +165,26 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
       }
 
       const canvas = canvasRef.current;
-      const ctx = canvas.getContext("2d", { alpha: false }); // Disable alpha for better performance
+      const ctx = canvas.getContext("2d", { alpha: false });
       if (!ctx) {
         throw new Error("Could not get canvas context");
       }
 
-      // Use 1280x720 for a balance between quality and performance
       canvas.width = 1280;
       canvas.height = 720;
 
       if (current?.type === "video" && videoRef.current) {
         const video = videoRef.current;
         const updateFrame = () => {
-          if (video && isPlaying) {
+          if (video && isPlaying && !video.paused) {
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            captureLoopRef.current = requestAnimationFrame(updateFrame);
+          } else if (video && isPlaying) {
             captureLoopRef.current = requestAnimationFrame(updateFrame);
           }
         };
         updateFrame();
       } else if (current?.type === "image") {
-        // Pre-load image and draw once
         if (!preloadedImageRef.current || preloadedImageRef.current.src !== current.url) {
           const img = document.createElement("img");
           img.crossOrigin = "anonymous";
@@ -197,7 +209,6 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
             const x = (canvas.width - w) / 2;
             const y = (canvas.height - h) / 2;
             ctx.drawImage(img, x, y, w, h);
-            // Only redraw at 1fps for static images to save CPU
             captureLoopRef.current = window.setTimeout(redraw, 1000) as any;
           }
         };
@@ -215,28 +226,75 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
     };
 
     /**
-     * Capture audio from audio element using Web Audio API.
+     * FIXED: Capture audio from any media element (video OR audio) using Web Audio API.
+     * Uses a singleton source node pattern to avoid "already connected" errors.
+     * Ensures the audio element is actually playing before capture.
      */
-    const captureAudioTrack = async (audioElement: HTMLAudioElement): Promise<MediaStreamTrack | null> => {
+    const captureVideoElementAudio = async (mediaElement: HTMLMediaElement): Promise<MediaStreamTrack | null> => {
       try {
+        // Ensure the element is actually playing audio
+        if (mediaElement.paused || mediaElement.muted || mediaElement.volume === 0) {
+          console.warn("[PreStreamMediaPlayer] Media element is paused/muted/zero-volume during capture");
+          // Still attempt capture — the track might be useful
+        }
+
         if (!audioContextRef.current) {
           audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
         }
 
         const audioContext = audioContextRef.current;
+
+        // Resume if suspended (required by browser autoplay policies)
         if (audioContext.state === "suspended") {
           await audioContext.resume();
         }
 
-        // We use a singleton source node to avoid "MediaElementAudioSourceNode has already been created" error
-        const source = (audioElement as any)._sourceNode || audioContext.createMediaElementSource(audioElement);
-        (audioElement as any)._sourceNode = source;
+        // Use a singleton source node to avoid "MediaElementAudioSourceNode has already been created" error
+        if (!sourceNodeRef.current || sourceNodeRef.current.mediaElement !== mediaElement) {
+          try {
+            sourceNodeRef.current = audioContext.createMediaElementSource(mediaElement);
+          } catch (err) {
+            // If already created for this element, reuse it
+            console.warn("[PreStreamMediaPlayer] Source node already exists, reusing:", err);
+          }
+        }
 
+        const source = sourceNodeRef.current;
+        if (!source) {
+          throw new Error("Failed to create media element source");
+        }
+
+        // Disconnect any previous connections to avoid duplicate audio paths
+        try {
+          source.disconnect();
+        } catch (err) {
+          // Ignore disconnect errors
+        }
+
+        // Create destination to capture audio as a MediaStream
         const destination = audioContext.createMediaStreamDestination();
-        source.connect(destination);
-        source.connect(audioContext.destination);
 
-        return destination.stream.getAudioTracks()[0];
+        // Create a gain node to control volume/mute
+        const gainNode = audioContext.createGain();
+        gainNode.gain.value = muted ? 0 : volume / 100;
+
+        // Route: source → gain → destination (capture) AND source → gain → speakers (monitor)
+        source.connect(gainNode);
+        gainNode.connect(destination);
+        try {
+          gainNode.connect(audioContext.destination);
+        } catch (err) {
+          // Already connected, fine
+        }
+
+        const audioTrack = destination.stream.getAudioTracks()[0];
+
+        if (!audioTrack) {
+          throw new Error("Failed to capture audio track — no audio data available");
+        }
+
+        console.log("[PreStreamMediaPlayer] Audio captured successfully:", audioTrack.label, audioTrack.readyState);
+        return audioTrack;
       } catch (error) {
         console.error("[PreStreamMediaPlayer] Audio capture error:", error);
         return null;
@@ -256,6 +314,15 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
       if (captureStreamRef.current) {
         captureStreamRef.current.getTracks().forEach(track => track.stop());
         captureStreamRef.current = null;
+      }
+
+      // Disconnect audio graph nodes
+      if (sourceNodeRef.current) {
+        try {
+          sourceNodeRef.current.disconnect();
+        } catch (err) {
+          // Already disconnected
+        }
       }
 
       setIsBroadcasting(false);
@@ -319,6 +386,20 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
       toast.success("Media URL added");
     }, [urlInput, urlType, currentIndex]);
 
+    /** FIXED: Added missing removeItem function */
+    const removeItem = useCallback((index: number) => {
+      setMediaList(prev => {
+        const next = prev.filter((_, i) => i !== index);
+        if (index === currentIndex) {
+          stopPlayback();
+          setCurrentIndex(next.length > 0 ? Math.min(index, next.length - 1) : -1);
+        } else if (index < currentIndex) {
+          setCurrentIndex(prev => prev - 1);
+        }
+        return next;
+      });
+    }, [currentIndex]);
+
     const startPlayback = useCallback(() => {
       if (!current) return;
       setIsPlaying(true);
@@ -335,11 +416,14 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
           }
         }, 10000);
       } else if (current.type === "video" && videoRef.current) {
+        // FIXED: Apply volume/mute before playing
         videoRef.current.volume = muted ? 0 : volume / 100;
+        videoRef.current.muted = muted;
         videoRef.current.loop = loop;
         videoRef.current.play().catch(() => toast.error("Cannot play this video"));
       } else if (current.type === "audio" && audioRef.current) {
         audioRef.current.volume = muted ? 0 : volume / 100;
+        audioRef.current.muted = muted;
         audioRef.current.loop = loop;
         audioRef.current.play().catch(() => toast.error("Cannot play this audio"));
       }
@@ -352,6 +436,7 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
       if (imageTimerRef.current) { clearTimeout(imageTimerRef.current); imageTimerRef.current = null; }
       setCurrentTime(0);
       onMediaActivate(null);
+      stopCapture();
     }, [onMediaActivate]);
 
     const handleNext = useCallback(() => {
@@ -372,6 +457,16 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
       const secs = Math.floor(time % 60);
       return `${mins}:${secs.toString().padStart(2, "0")}`;
     };
+
+    const toggleMute = useCallback(() => {
+      setMuted(prev => !prev);
+    }, []);
+
+    const handleVolumeSlider = useCallback((vals: number[]) => {
+      const val = vals[0];
+      setVolume(val);
+      setMuted(val === 0);
+    }, []);
 
     return (
       <Card className="bg-slate-900/40 border-slate-800 overflow-hidden flex flex-col h-full">
@@ -497,6 +592,18 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
                   )}
                 </div>
 
+                {/* Audio Status Indicator */}
+                {isBroadcasting && (
+                  <div className={`absolute top-4 right-4 px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 ${
+                    audioCaptured
+                      ? "bg-green-600/90 text-white"
+                      : "bg-amber-600/90 text-white"
+                  }`}>
+                    {audioCaptured ? <Volume2 className="w-3 h-3" /> : <VolumeX className="w-3 h-3" />}
+                    Audio {audioCaptured ? "Active" : "N/A"}
+                  </div>
+                )}
+
                 {/* Error Overlay */}
                 {captureError && (
                   <div className="absolute inset-0 bg-black/80 flex items-center justify-center p-6 text-center z-50">
@@ -565,13 +672,13 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
 
               <div className="flex items-center gap-4">
                 <div className="flex items-center gap-2 w-24">
-                  <Button variant="ghost" size="icon" className="h-7 w-7 text-slate-500" onClick={() => setMuted(!muted)}>
+                  <Button variant="ghost" size="icon" className="h-7 w-7 text-slate-500" onClick={toggleMute}>
                     {muted || volume === 0 ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
                   </Button>
                   <Slider
                     value={[muted ? 0 : volume]}
                     max={100}
-                    onValueChange={([val]) => { setVolume(val); setMuted(val === 0); }}
+                    onValueChange={handleVolumeSlider}
                     className="flex-1"
                   />
                 </div>

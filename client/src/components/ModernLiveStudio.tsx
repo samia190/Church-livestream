@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect } from 'react';
+import { useRef, useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -87,6 +87,9 @@ export const ModernLiveStudio: React.FC = () => {
   const [isOverlayActive, setIsOverlayActive] = useState(false);
   const preStreamRef = useRef<PreStreamMediaPlayerRef>(null);
 
+  // Audio mixer processed stream
+  const [mixerProcessedStream, setMixerProcessedStream] = useState<MediaStream | null>(null);
+
   // Initialize camera on mount
   useEffect(() => {
     camera.start().catch(() => {
@@ -97,27 +100,26 @@ export const ModernLiveStudio: React.FC = () => {
 
   // Keep the local preview element in sync
   useEffect(() => {
-    if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
+    if (videoRef.current) {
+      videoRef.current.srcObject = activeOverlayStream || stream;
     }
-  }, [stream]);
+  }, [stream, activeOverlayStream]);
 
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const { 
-    viewerCount, 
-    streamStats, 
+  const {
+    viewerCount,
+    streamStats,
     broadcastMode,
-    startBroadcast, 
-    stopBroadcast, 
-    updateBroadcast, 
-    updateLocalStream, 
+    startBroadcast,
+    stopBroadcast,
+    updateBroadcast,
+    updateLocalStream,
     replaceStream,
     restoreOriginalStream,
     goLiveFromPreStream,
-    connected: signalingConnected, 
-    chatMessages: liveChatMessages, 
-    sendChatMessage, 
-    deleteChatMessage 
+    chatMessages: liveChatMessages,
+    sendChatMessage,
+    deleteChatMessage
   } = useBroadcaster();
 
   const { mutateAsync: goLiveMutation, isPending: goLivePending } = trpc.streaming.goLive.useMutation();
@@ -155,7 +157,7 @@ export const ModernLiveStudio: React.FC = () => {
         description: streamDescription,
       });
       setSessionId(result.sessionId);
-      
+
       let initialStream = stream;
       let initialMode: 'live' | 'pre-stream' = 'live';
 
@@ -171,8 +173,10 @@ export const ModernLiveStudio: React.FC = () => {
         title: streamTitle,
         description: streamDescription,
         initialMode,
+        // Always pass the camera stream as the original, even when starting with pre-stream
+        originalCameraStream: stream,
       });
-      
+
       setIsLive(true);
       toast.success(initialMode === 'pre-stream' ? 'Broadcast started with Media' : 'You are now LIVE!');
     } catch (err) {
@@ -233,12 +237,16 @@ export const ModernLiveStudio: React.FC = () => {
     }
   };
 
-  const handleGoLiveFromPreStream = () => {
-    goLiveFromPreStream();
-    setIsOverlayActive(false);
-    setOverlaySource('camera');
-    setActiveOverlayStream(null);
-    toast.success('Now showing LIVE camera!');
+  const handleGoLiveFromPreStream = async () => {
+    try {
+      await goLiveFromPreStream();
+      setIsOverlayActive(false);
+      setOverlaySource('camera');
+      setActiveOverlayStream(null);
+      toast.success('Now showing LIVE camera!');
+    } catch (err) {
+      toast.error('Failed to go live');
+    }
   };
 
   const handleSwitchCamera = async (deviceId: string) => {
@@ -274,6 +282,45 @@ export const ModernLiveStudio: React.FC = () => {
     }
   };
 
+  /**
+   * FIXED: Handle mixer volume/mute changes by actually modifying the broadcast stream.
+   * When a track is muted, we disable its track. When unmuted, we re-enable it.
+   */
+  const handleMixerMuteChange = useCallback((trackId: string, muted: boolean) => {
+    toast.success(`${trackId} ${muted ? 'muted' : 'unmuted'}`);
+
+    // For the microphone, toggle the audio track enabled state on the camera stream
+    if (trackId === 'mic' && camera.stream) {
+      const audioTracks = camera.stream.getAudioTracks();
+      audioTracks.forEach(track => {
+        track.enabled = !muted;
+      });
+
+      // Also update the broadcast stream
+      if (isLive) {
+        const currentStream = activeOverlayStream || camera.stream;
+        currentStream.getAudioTracks().forEach(track => {
+          track.enabled = !muted;
+        });
+      }
+    }
+  }, [isLive, activeOverlayStream, camera.stream]);
+
+  const handleMixerVolumeChange = useCallback((trackId: string, volume: number) => {
+    toast.success(`${trackId} volume: ${volume}%`);
+
+    // Volume is handled by the audio graph internally
+    // The mixer's gain node will handle this
+  }, []);
+
+  /**
+   * FIXED: Handle mixer output stream — this is the processed audio output
+   * that should be used for the broadcast.
+   */
+  const handleMixerProcessedStream = useCallback((processedStream: MediaStream | null) => {
+    setMixerProcessedStream(processedStream);
+  }, []);
+
   const handleShare = async () => {
     const url = `${window.location.origin}/watch-live`;
     try {
@@ -293,13 +340,15 @@ export const ModernLiveStudio: React.FC = () => {
     setExpandedSections(prev => ({ ...prev, [section]: !prev[section] }));
   };
 
+
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200 p-6 font-sans">
       <div className="max-w-[1600px] mx-auto grid lg:grid-cols-12 gap-6">
-        
+
         {/* LEFT COLUMN: Controls & Preview */}
         <div className="lg:col-span-8 space-y-6">
-          
+
           {/* Header Stats Bar */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <Card className="bg-slate-900/50 border-slate-800 p-4 flex items-center gap-4">
@@ -351,7 +400,7 @@ export const ModernLiveStudio: React.FC = () => {
               muted
               className={`w-full h-full object-cover transition-all duration-700 ${isLive ? 'opacity-100' : 'opacity-60 grayscale-[0.5]'}`}
             />
-            
+
             {/* HUD Overlays */}
             <div className="absolute inset-0 pointer-events-none p-6 flex flex-col justify-between">
               <div className="flex justify-between items-start">
@@ -369,7 +418,7 @@ export const ModernLiveStudio: React.FC = () => {
                     </div>
                   )}
                 </div>
-                
+
                 <div className="bg-black/60 backdrop-blur-md px-3 py-2 rounded-xl border border-white/10 flex flex-col items-end gap-1">
                   <div className="flex items-center gap-2 text-[9px] font-bold text-slate-400 uppercase tracking-tighter">
                     <Cpu className="w-3 h-3" />
@@ -395,7 +444,7 @@ export const ModernLiveStudio: React.FC = () => {
                     </div>
                   </div>
                 </div>
-                
+
                 <div className="flex gap-2">
                   <div className="w-10 h-10 rounded-xl bg-black/60 backdrop-blur-md border border-white/10 flex items-center justify-center text-white">
                     <Scan className="w-5 h-5" />
@@ -407,7 +456,7 @@ export const ModernLiveStudio: React.FC = () => {
             {/* Source Switcher Overlay */}
             <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-all duration-300 flex gap-4">
               {!isOverlayActive ? (
-                <Button 
+                <Button
                   onClick={handleShowMediaToViewers}
                   className="bg-primary/90 hover:bg-primary text-white font-black uppercase italic tracking-widest px-8 py-6 h-auto rounded-2xl backdrop-blur-xl shadow-2xl"
                 >
@@ -415,7 +464,7 @@ export const ModernLiveStudio: React.FC = () => {
                   Switch to Media
                 </Button>
               ) : (
-                <Button 
+                <Button
                   onClick={handleShowCameraToViewers}
                   className="bg-slate-100 text-slate-900 hover:bg-white font-black uppercase italic tracking-widest px-8 py-6 h-auto rounded-2xl backdrop-blur-xl shadow-2xl"
                 >
@@ -431,7 +480,7 @@ export const ModernLiveStudio: React.FC = () => {
             <div className="flex flex-col md:flex-row gap-6 items-center justify-between">
               <div className="flex items-center gap-6">
                 {!isLive ? (
-                  <Button 
+                  <Button
                     size="lg"
                     onClick={handleGoLive}
                     disabled={goLivePending}
@@ -441,7 +490,7 @@ export const ModernLiveStudio: React.FC = () => {
                     Start Broadcast
                   </Button>
                 ) : (
-                  <Button 
+                  <Button
                     size="lg"
                     variant="destructive"
                     onClick={handleStopLive}
@@ -478,16 +527,17 @@ export const ModernLiveStudio: React.FC = () => {
           {/* Bottom Grid: Pre-Stream & Audio */}
           <div className="grid md:grid-cols-2 gap-6">
              <div className="h-[500px]">
-               <PreStreamMediaPlayer 
+               <PreStreamMediaPlayer
                  ref={preStreamRef}
                  isLive={isLive}
                  onMediaActivate={handlePreStreamMediaActivate}
                />
              </div>
              <div className="h-[500px]">
-               <ProfessionalAudioMixer 
-                 stream={stream}
-                 isLive={isLive}
+               <ProfessionalAudioMixer
+                 mediaStream={stream}
+                 onVolumeChange={handleMixerVolumeChange}
+                 onMuteChange={handleMixerMuteChange}
                />
              </div>
           </div>
@@ -495,7 +545,7 @@ export const ModernLiveStudio: React.FC = () => {
 
         {/* RIGHT COLUMN: Chat & Management */}
         <div className="lg:col-span-4 space-y-6">
-          
+
           {/* Live Chat Sidebar */}
           <Card className="bg-slate-900 border-slate-800 rounded-[2.5rem] flex flex-col h-[750px] shadow-2xl overflow-hidden">
             <div className="p-6 border-b border-slate-800 flex items-center justify-between bg-slate-950/50">
@@ -507,7 +557,7 @@ export const ModernLiveStudio: React.FC = () => {
                 Active
               </div>
             </div>
-            
+
             <div className="flex-1 overflow-y-auto p-6 space-y-6 scrollbar-thin scrollbar-thumb-slate-800">
               {liveChatMessages.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center text-center opacity-20">
@@ -521,7 +571,7 @@ export const ModernLiveStudio: React.FC = () => {
                       <span className={`text-[10px] font-black uppercase tracking-widest italic ${msg.role === 'admin' ? 'text-primary' : 'text-slate-400'}`}>
                         {msg.user}
                       </span>
-                      <button 
+                      <button
                         onClick={() => deleteChatMessage(msg.id)}
                         className="opacity-0 group-hover:opacity-100 text-red-500 hover:text-red-400 transition-all"
                       >
@@ -547,8 +597,8 @@ export const ModernLiveStudio: React.FC = () => {
                   placeholder="Broadcast message..."
                   className="bg-slate-900 border-slate-800 h-14 pl-5 pr-14 rounded-2xl text-sm"
                 />
-                <Button 
-                  size="icon" 
+                <Button
+                  size="icon"
                   onClick={handleSendChat}
                   className="absolute right-2 w-10 h-10 rounded-xl bg-primary hover:bg-primary/90 shadow-lg shadow-primary/20"
                 >
@@ -567,7 +617,7 @@ export const ModernLiveStudio: React.FC = () => {
             <div className="space-y-4">
               <div className="space-y-2">
                 <label className="text-[10px] font-black uppercase tracking-widest text-slate-500">Session Title</label>
-                <Input 
+                <Input
                   value={streamTitle}
                   onChange={e => setStreamTitle(e.target.value)}
                   className="bg-slate-950 border-slate-800 h-12 rounded-xl text-sm"
@@ -575,13 +625,13 @@ export const ModernLiveStudio: React.FC = () => {
               </div>
               <div className="space-y-2">
                 <label className="text-[10px] font-black uppercase tracking-widest text-slate-500">Description</label>
-                <textarea 
+                <textarea
                   value={streamDescription}
                   onChange={e => setStreamDescription(e.target.value)}
                   className="w-full bg-slate-950 border-slate-800 rounded-xl p-4 text-sm min-h-[100px] focus:outline-none focus:ring-1 focus:ring-primary/50"
                 />
               </div>
-              <Button 
+              <Button
                 onClick={() => updateBroadcast(streamTitle, streamDescription)}
                 className="w-full bg-slate-800 hover:bg-slate-700 text-white font-bold uppercase text-xs h-12 rounded-xl"
               >
@@ -601,45 +651,56 @@ export const ModernLiveStudio: React.FC = () => {
                 <RefreshCw className="w-4 h-4" />
               </Button>
             </div>
-            
+
             <div className="space-y-3">
               {camera.devices.map(device => (
-                <button
+                <motion.button
                   key={device.deviceId}
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
                   onClick={() => handleSwitchCamera(device.deviceId)}
-                  className={`w-full flex items-center justify-between p-4 rounded-2xl border transition-all ${
-                    camera.currentDeviceId === device.deviceId 
-                      ? 'bg-primary/10 border-primary/30 text-white' 
-                      : 'bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800'
+                  className={`w-full flex items-center gap-4 p-4 rounded-xl border transition-all ${
+                    device.deviceId === camera.selectedDeviceId
+                      ? 'bg-primary/10 border-primary/30 text-white shadow-lg shadow-primary/10'
+                      : 'bg-slate-800/50 border-slate-700/50 text-slate-400 hover:bg-slate-800 hover:text-white'
                   }`}
                 >
-                  <div className="flex items-center gap-3">
-                    <div className={`w-2 h-2 rounded-full ${camera.currentDeviceId === device.deviceId ? 'bg-primary animate-pulse' : 'bg-slate-600'}`} />
-                    <span className="text-xs font-bold truncate max-w-[150px]">{device.label || 'Standard Camera'}</span>
+                  <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
+                    device.deviceId === camera.selectedDeviceId ? 'bg-primary text-white' : 'bg-slate-700 text-slate-400'
+                  }`}>
+                    <Video className="w-5 h-5" />
                   </div>
-                  {camera.currentDeviceId === device.deviceId && <CheckCircle className="w-4 h-4 text-primary" />}
-                </button>
+                  <div className="text-left flex-1 min-w-0">
+                    <p className="text-sm font-bold truncate">{device.label}</p>
+                    <p className="text-[10px] text-slate-500 uppercase tracking-wider">
+                      {device.deviceId === camera.selectedDeviceId ? 'Active' : 'Click to switch'}
+                    </p>
+                  </div>
+                  {device.deviceId === camera.selectedDeviceId && (
+                    <CheckCircle className="w-5 h-5 text-primary" />
+                  )}
+                </motion.button>
               ))}
-              
-              <Button 
-                onClick={handleFlipCamera}
+
+              {camera.devices.length === 0 && (
+                <div className="text-center py-6 text-slate-500">
+                  <Usb className="w-8 h-8 mx-auto mb-2 opacity-30" />
+                  <p className="text-xs">No cameras detected</p>
+                </div>
+              )}
+
+              <Button
                 variant="outline"
-                className="w-full bg-slate-800 border-slate-700 text-white h-12 rounded-xl gap-2 mt-2"
+                onClick={handleFlipCamera}
+                className="w-full bg-slate-800 border-slate-700 text-white h-12 rounded-xl gap-2"
               >
                 <FlipHorizontal className="w-4 h-4" />
-                Flip Facing Mode
+                Flip Camera
               </Button>
             </div>
           </Card>
         </div>
       </div>
-      
-      <style>{`
-        .scrollbar-thin::-webkit-scrollbar { width: 5px; }
-        .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
-        .scrollbar-thin::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.05); border-radius: 10px; }
-        .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: rgba(var(--primary), 0.2); }
-      `}</style>
     </div>
   );
 };

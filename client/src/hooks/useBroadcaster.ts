@@ -12,6 +12,8 @@ interface StartBroadcastArgs {
   description?: string;
   /** The initial broadcast mode: "live" or "pre-stream" */
   initialMode?: "live" | "pre-stream";
+  /** Optional: the original camera stream to save for restoration */
+  originalCameraStream?: MediaStream;
 }
 
 export type BroadcastMode = "offline" | "pre-stream" | "live";
@@ -194,7 +196,8 @@ export function useBroadcaster() {
     (stream: MediaStream, session: StartBroadcastArgs) => {
       localStreamRef.current = stream;
       // Save the original camera stream for later restoration
-      originalCameraStreamRef.current = stream;
+      // If provided, use the explicit camera stream; otherwise use the broadcast stream
+      originalCameraStreamRef.current = session.originalCameraStream || stream;
 
       const initialMode = session.initialMode || "live";
 
@@ -369,10 +372,33 @@ export function useBroadcaster() {
   }, []);
 
   /**
-   * Go live from pre-stream mode — switch the server mode to "live"
-   * while keeping the same stream.
+   * Go live from pre-stream mode — restore the camera stream and switch server mode to "live".
    */
-  const goLiveFromPreStream = useCallback(() => {
+  const goLiveFromPreStream = useCallback(async () => {
+    const originalStream = originalCameraStreamRef.current;
+    if (originalStream) {
+      try {
+        const videoTrack = originalStream.getVideoTracks()[0];
+        const audioTrack = originalStream.getAudioTracks()[0];
+
+        for (const pc of Array.from(peersRef.current.values())) {
+          const senders = pc.getSenders();
+          for (const sender of senders) {
+            if (sender.track?.kind === "video" && videoTrack) {
+              await sender.replaceTrack(videoTrack);
+              console.log("[useBroadcaster] Video track switched to camera for go-live");
+            } else if (sender.track?.kind === "audio" && audioTrack) {
+              await sender.replaceTrack(audioTrack);
+              console.log("[useBroadcaster] Audio track switched to mic for go-live");
+            }
+          }
+        }
+        localStreamRef.current = originalStream;
+      } catch (error) {
+        console.error("[useBroadcaster] Failed to restore camera for go-live:", error);
+      }
+    }
+
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({
         type: "broadcast-mode-changed",
