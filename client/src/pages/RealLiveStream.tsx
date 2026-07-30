@@ -57,7 +57,7 @@ export default function RealLiveStream() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 pt-24 pb-12">
+    <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 pt-20 sm:pt-24 pb-12">
       <div className="container mx-auto px-4">
         {/* Header */}
         <motion.div
@@ -65,7 +65,7 @@ export default function RealLiveStream() {
           animate={{ opacity: 1, y: 0 }}
           className="mb-8"
         >
-          <h1 className="text-4xl font-bold text-foreground mb-2">Live Streaming Control</h1>
+          <h1 className="text-2xl sm:text-4xl font-bold text-foreground mb-2">Live Streaming Control</h1>
           <p className="text-muted-foreground">Broadcast to multiple platforms simultaneously</p>
         </motion.div>
 

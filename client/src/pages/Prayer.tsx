@@ -63,12 +63,12 @@ export default function Prayer() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.8 }}
           >
-            <h1 className="text-5xl md:text-6xl font-bold mb-4">
+            <h1 className="text-3xl sm:text-5xl md:text-6xl font-bold mb-4">
               <span className="text-glow">
                 Prayer Requests
               </span>
             </h1>
-            <p className="text-lg text-muted-foreground max-w-2xl">
+            <p className="text-base sm:text-lg text-muted-foreground max-w-2xl">
               Share your prayer needs with our church family. We are here to pray with you and support your spiritual journey.
             </p>
           </motion.div>
@@ -80,7 +80,7 @@ export default function Prayer() {
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 1 }}
-        className="relative w-full h-96 overflow-hidden"
+        className="relative w-full h-48 sm:h-72 md:h-96 overflow-hidden"
       >
         <img
           src="https://d2xsxph8kpxj0f.cloudfront.net/310519663779111251/22XNoSU8LuRfCuqftFgkdg/prayer-spiritual-light-Enpn5DqjWo6qMu8rHNsRtu.webp"
@@ -91,7 +91,7 @@ export default function Prayer() {
       </motion.div>
 
       {/* Prayer Request Form */}
-      <section className="py-20 px-4">
+      <section className="py-12 sm:py-20 px-4">
         <div className="max-w-2xl mx-auto">
           <motion.div
             initial={{ opacity: 0, y: 20 }}

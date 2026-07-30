@@ -106,12 +106,12 @@ export default function Sermons() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.8 }}
           >
-            <h1 className="text-5xl md:text-6xl font-bold mb-4">
+            <h1 className="text-3xl sm:text-5xl md:text-6xl font-bold mb-4">
               <span className="text-glow">
                 Sermons & Media
               </span>
             </h1>
-            <p className="text-lg text-muted-foreground max-w-2xl">
+            <p className="text-base sm:text-lg text-muted-foreground max-w-2xl">
               Access our library of inspiring sermons, teachings, and spiritual content from our church leaders.
             </p>
           </motion.div>
@@ -123,7 +123,7 @@ export default function Sermons() {
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 1 }}
-        className="relative w-full h-96 overflow-hidden"
+        className="relative w-full h-48 sm:h-72 md:h-96 overflow-hidden"
       >
         <img
           src="https://d2xsxph8kpxj0f.cloudfront.net/310519663779111251/22XNoSU8LuRfCuqftFgkdg/sermons-media-broadcast-PLiweoLYZSD9HWrE5QubbG.webp"
@@ -135,14 +135,14 @@ export default function Sermons() {
       </motion.div>
 
       {/* Sermons Grid */}
-      <section className="py-20 px-4">
+      <section className="py-12 sm:py-20 px-4">
         <div className="max-w-6xl mx-auto">
           <motion.div
             variants={containerVariants}
             initial="hidden"
             whileInView="visible"
             viewport={{ once: true }}
-            className="grid md:grid-cols-2 gap-6"
+            className="grid sm:grid-cols-2 gap-4 sm:gap-6"
           >
             {sermons.map((sermon, idx) => (
               <motion.div key={idx} variants={itemVariants}>

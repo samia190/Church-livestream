@@ -283,43 +283,40 @@ export const ModernLiveStudio: React.FC = () => {
   };
 
   /**
-   * FIXED: Handle mixer volume/mute changes by actually modifying the broadcast stream.
-   * When a track is muted, we disable its track. When unmuted, we re-enable it.
+   * Professional: Mixer handles all audio logic internally via gain nodes.
+   * We just show a toast for feedback.
    */
   const handleMixerMuteChange = useCallback((trackId: string, muted: boolean) => {
     toast.success(`${trackId} ${muted ? 'muted' : 'unmuted'}`);
-
-    // For the microphone, toggle the audio track enabled state on the camera stream
-    if (trackId === 'mic' && camera.stream) {
-      const audioTracks = camera.stream.getAudioTracks();
-      audioTracks.forEach(track => {
-        track.enabled = !muted;
-      });
-
-      // Also update the broadcast stream
-      if (isLive) {
-        const currentStream = activeOverlayStream || camera.stream;
-        currentStream.getAudioTracks().forEach(track => {
-          track.enabled = !muted;
-        });
-      }
-    }
-  }, [isLive, activeOverlayStream, camera.stream]);
+  }, []);
 
   const handleMixerVolumeChange = useCallback((trackId: string, volume: number) => {
-    toast.success(`${trackId} volume: ${volume}%`);
-
     // Volume is handled by the audio graph internally
-    // The mixer's gain node will handle this
   }, []);
 
   /**
-   * FIXED: Handle mixer output stream — this is the processed audio output
-   * that should be used for the broadcast.
+   * Professional: Handle mixer output stream.
+   * This is the final, processed, combined audio (Mic + Music + System).
+   * We merge this audio with our video and send it to viewers.
    */
   const handleMixerProcessedStream = useCallback((processedStream: MediaStream | null) => {
     setMixerProcessedStream(processedStream);
-  }, []);
+    
+    if (isLive && processedStream) {
+      const currentVideoSource = activeOverlayStream || camera.stream;
+      if (currentVideoSource) {
+        const videoTrack = currentVideoSource.getVideoTracks()[0];
+        const audioTrack = processedStream.getAudioTracks()[0];
+        
+        if (videoTrack && audioTrack) {
+          const combinedStream = new MediaStream([videoTrack, audioTrack]);
+          // replaceStream handles swapping the tracks for all viewers
+          replaceStream(combinedStream);
+          console.log("[Studio] Broadcast stream updated with professional mixed audio");
+        }
+      }
+    }
+  }, [isLive, activeOverlayStream, camera.stream, replaceStream]);
 
   const handleShare = async () => {
     const url = `${window.location.origin}/watch-live`;
@@ -343,14 +340,14 @@ export const ModernLiveStudio: React.FC = () => {
 
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-200 p-6 font-sans">
-      <div className="max-w-[1600px] mx-auto grid lg:grid-cols-12 gap-6">
+    <div className="min-h-screen bg-slate-950 text-slate-200 p-3 sm:p-6 font-sans">
+      <div className="max-w-[1600px] mx-auto grid lg:grid-cols-12 gap-3 sm:gap-6">
 
         {/* LEFT COLUMN: Controls & Preview */}
         <div className="lg:col-span-8 space-y-6">
 
           {/* Header Stats Bar */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-4">
             <Card className="bg-slate-900/50 border-slate-800 p-4 flex items-center gap-4">
               <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${isLive ? 'bg-red-500/20 text-red-400' : 'bg-slate-800 text-slate-500'}`}>
                 <Radio className="w-5 h-5" />
@@ -392,7 +389,7 @@ export const ModernLiveStudio: React.FC = () => {
           </div>
 
           {/* Main Preview Monitor */}
-          <div className="relative aspect-video bg-black rounded-[2rem] overflow-hidden border-4 border-slate-900 shadow-2xl group">
+          <div className="relative aspect-video bg-black rounded-xl sm:rounded-[2rem] overflow-hidden border-2 sm:border-4 border-slate-900 shadow-2xl group">
             <video
               ref={videoRef}
               autoPlay
@@ -454,7 +451,7 @@ export const ModernLiveStudio: React.FC = () => {
             </div>
 
             {/* Source Switcher Overlay */}
-            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-all duration-300 flex gap-4">
+              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 active:opacity-100 transition-all duration-300 flex flex-col sm:flex-row gap-2 sm:gap-4">
               {!isOverlayActive ? (
                 <Button
                   onClick={handleShowMediaToViewers}
@@ -476,7 +473,7 @@ export const ModernLiveStudio: React.FC = () => {
           </div>
 
           {/* Master Control Bar */}
-          <Card className="bg-slate-900 border-slate-800 p-6 rounded-[2rem] shadow-xl">
+          <Card className="bg-slate-900 border-slate-800 p-3 sm:p-6 rounded-xl sm:rounded-[2rem] shadow-xl">
             <div className="flex flex-col md:flex-row gap-6 items-center justify-between">
               <div className="flex items-center gap-6">
                 {!isLive ? (
@@ -525,15 +522,15 @@ export const ModernLiveStudio: React.FC = () => {
           </Card>
 
           {/* Bottom Grid: Pre-Stream & Audio */}
-          <div className="grid md:grid-cols-2 gap-6">
-             <div className="h-[500px]">
+          <div className="grid sm:grid-cols-2 gap-3 sm:gap-6">
+             <div className="h-auto sm:h-[500px]">
                <PreStreamMediaPlayer
                  ref={preStreamRef}
                  isLive={isLive}
                  onMediaActivate={handlePreStreamMediaActivate}
                />
              </div>
-             <div className="h-[500px]">
+             <div className="h-auto sm:h-[500px]">
                <ProfessionalAudioMixer
                  mediaStream={stream}
                  onVolumeChange={handleMixerVolumeChange}
@@ -547,7 +544,7 @@ export const ModernLiveStudio: React.FC = () => {
         <div className="lg:col-span-4 space-y-6">
 
           {/* Live Chat Sidebar */}
-          <Card className="bg-slate-900 border-slate-800 rounded-[2.5rem] flex flex-col h-[750px] shadow-2xl overflow-hidden">
+          <Card className="bg-slate-900 border-slate-800 rounded-xl sm:rounded-[2.5rem] flex flex-col h-[500px] sm:h-[750px] shadow-2xl overflow-hidden">
             <div className="p-6 border-b border-slate-800 flex items-center justify-between bg-slate-950/50">
               <div className="flex items-center gap-3">
                 <MessageSquare className="w-6 h-6 text-primary" />
@@ -609,7 +606,7 @@ export const ModernLiveStudio: React.FC = () => {
           </Card>
 
           {/* Stream Settings Card */}
-          <Card className="bg-slate-900 border-slate-800 p-6 rounded-[2.5rem]">
+          <Card className="bg-slate-900 border-slate-800 p-3 sm:p-6 rounded-xl sm:rounded-[2.5rem]">
             <div className="flex items-center gap-3 mb-6">
               <Settings className="w-5 h-5 text-slate-400" />
               <h3 className="font-black text-white italic uppercase tracking-tight">Broadcast Info</h3>
@@ -641,7 +638,7 @@ export const ModernLiveStudio: React.FC = () => {
           </Card>
 
           {/* Camera Selector */}
-          <Card className="bg-slate-900 border-slate-800 p-6 rounded-[2.5rem]">
+          <Card className="bg-slate-900 border-slate-800 p-3 sm:p-6 rounded-xl sm:rounded-[2.5rem]">
             <div className="flex items-center justify-between mb-6">
               <div className="flex items-center gap-3">
                 <Camera className="w-5 h-5 text-slate-400" />

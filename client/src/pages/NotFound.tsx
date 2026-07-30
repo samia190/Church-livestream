@@ -14,7 +14,7 @@ export default function NotFound() {
   return (
     <div className="min-h-screen w-full text-foreground">
       <Navigation />
-      <div className="min-h-screen w-full flex items-center justify-center px-4 pt-16">
+      <div className="min-h-screen w-full flex items-center justify-center px-4 pt-24 pb-12">
         <Card className="w-full max-w-lg mx-4 glass-panel border-0">
           <CardContent className="pt-8 pb-8 text-center">
             <div className="flex justify-center mb-6">

@@ -44,12 +44,12 @@ export default function History() {
             transition={{ duration: 0.8 }}
           >
             <p className="label-eyebrow mb-3">Since the Independence Era</p>
-            <h1 className="text-5xl md:text-6xl font-bold mb-4">
+            <h1 className="text-3xl sm:text-5xl md:text-6xl font-bold mb-4">
               <span className="text-glow">
                 Our History & Heritage
               </span>
             </h1>
-            <p className="text-lg text-muted-foreground max-w-2xl">
+            <p className="text-base sm:text-lg text-muted-foreground max-w-2xl">
               Rooted in the Mau Mau era, the National Independence Church of Africa carries a legacy of spiritual leadership and community transformation.
             </p>
           </motion.div>
@@ -61,7 +61,7 @@ export default function History() {
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 1 }}
-        className="relative w-full h-96 overflow-hidden"
+        className="relative w-full h-48 sm:h-72 md:h-96 overflow-hidden"
       >
         <img
           src="https://d2xsxph8kpxj0f.cloudfront.net/310519663779111251/22XNoSU8LuRfCuqftFgkdg/history-mau-mau-heritage-SzSLme4mBZ8R29GAEgp2D9.webp"
@@ -72,7 +72,7 @@ export default function History() {
       </motion.div>
 
       {/* Main Content */}
-      <section className="py-20 px-4">
+      <section className="py-12 sm:py-20 px-4">
         <div className="max-w-4xl mx-auto">
           <motion.div
             variants={containerVariants}

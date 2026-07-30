@@ -44,20 +44,21 @@ export default function NotificationManager() {
   if (!('Notification' in window)) return null;
 
   return (
-    <div className="fixed bottom-6 left-6 z-50">
+    <div className="fixed bottom-4 left-4 sm:bottom-6 sm:left-6 z-30">
       {permission !== 'granted' ? (
         <Button
           onClick={requestPermission}
           variant="outline"
           size="sm"
-          className="bg-void/80 backdrop-blur-md border-ember/50 hover:bg-ember/20 text-foreground gap-2 rounded-full shadow-lg animate-bounce"
+          className="bg-void/80 backdrop-blur-md border-ember/50 hover:bg-ember/20 text-foreground gap-2 rounded-full shadow-lg animate-bounce text-xs sm:text-sm px-3 py-1.5 sm:px-4 sm:py-2"
         >
-          <Bell className="w-4 h-4 text-ember" />
-          Get Live Updates
+          <Bell className="w-3 h-3 sm:w-4 sm:h-4 text-ember" />
+          <span className="hidden sm:inline">Get Live Updates</span>
+          <span className="sm:hidden">Alerts</span>
         </Button>
       ) : (
-        <div className="bg-void/80 backdrop-blur-md border border-signal/30 p-2 rounded-full shadow-lg">
-          <Bell className="w-4 h-4 text-signal" />
+        <div className="bg-void/80 backdrop-blur-md border border-signal/30 p-1.5 sm:p-2 rounded-full shadow-lg">
+          <Bell className="w-3 h-3 sm:w-4 sm:h-4 text-signal" />
         </div>
       )}
     </div>

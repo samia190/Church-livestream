@@ -70,12 +70,35 @@ export function useBroadcaster() {
   }, [isLive]);
 
   const createPeerForViewer = useCallback((viewerId: string) => {
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    const pc = new RTCPeerConnection({
+      iceServers: ICE_SERVERS,
+      iceTransportPolicy: 'all',
+      bundlePolicy: 'max-bundle',
+      iceCandidatePoolSize: 10,
+    });
     peersRef.current.set(viewerId, pc);
 
     const stream = localStreamRef.current;
     if (stream) {
-      stream.getTracks().forEach(track => pc.addTrack(track, stream));
+      stream.getTracks().forEach(track => {
+        const sender = pc.addTrack(track, stream);
+        // Set adaptive bitrate degradation for mobile viewers
+        if (track.kind === 'video' && sender) {
+          try {
+            sender.setParameters({
+              ...sender.getParameters(),
+              degradationPreference: 'maintain-framerate',
+              encodings: [{
+                maxBitrate: 2500000,
+                maxFramerate: 30,
+              }],
+            });
+          } catch (e) {
+            // Some browsers don't support setParameters
+            console.log('[useBroadcaster] setParameters not supported:', e);
+          }
+        }
+      });
     }
 
     pc.onicecandidate = event => {
@@ -91,9 +114,23 @@ export function useBroadcaster() {
     };
 
     pc.onconnectionstatechange = () => {
-      if (["failed", "closed", "disconnected"].includes(pc.connectionState)) {
+      const state = pc.connectionState;
+      if (["failed", "closed", "disconnected"].includes(state)) {
+        console.log(`[useBroadcaster] Viewer ${viewerId} connection state: ${state}`);
         pc.close();
         peersRef.current.delete(viewerId);
+      }
+    };
+
+    // Monitor bitrate and adapt
+    pc.oniceconnectionstatechange = () => {
+      if (pc.iceConnectionState === 'failed') {
+        console.log(`[useBroadcaster] ICE failed for viewer ${viewerId}, attempting restart`);
+        try {
+          pc.restartIce();
+        } catch (e) {
+          console.log('[useBroadcaster] ICE restart failed:', e);
+        }
       }
     };
 

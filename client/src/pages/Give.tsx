@@ -75,12 +75,12 @@ export default function Give() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.8 }}
           >
-            <h1 className="text-5xl md:text-6xl font-bold mb-4">
+            <h1 className="text-3xl sm:text-5xl md:text-6xl font-bold mb-4">
               <span className="text-glow">
                 Support Our Ministry
               </span>
             </h1>
-            <p className="text-lg text-muted-foreground max-w-2xl">
+            <p className="text-base sm:text-lg text-muted-foreground max-w-2xl">
               Your generous giving enables N.I.C.A. Kibugu Parish to continue our mission of spiritual growth and community transformation.
             </p>
           </motion.div>
@@ -98,8 +98,8 @@ export default function Give() {
             className="text-center mb-16"
           >
             <p className="label-eyebrow mb-3">Where It Goes</p>
-            <h2 className="text-4xl font-bold mb-4">How Your Gift Makes a Difference</h2>
-            <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
+            <h2 className="text-2xl sm:text-4xl font-bold mb-4">How Your Gift Makes a Difference</h2>
+            <p className="text-base sm:text-lg text-muted-foreground max-w-2xl mx-auto">
               Every contribution directly supports our community initiatives and spiritual programs.
             </p>
           </motion.div>
@@ -109,7 +109,7 @@ export default function Give() {
             initial="hidden"
             whileInView="visible"
             viewport={{ once: true }}
-            className="grid md:grid-cols-2 lg:grid-cols-4 gap-6"
+            className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-6"
           >
             {[
               {

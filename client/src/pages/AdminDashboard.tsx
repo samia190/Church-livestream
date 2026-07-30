@@ -78,7 +78,7 @@ export default function AdminDashboard() {
         {/* Tabs */}
         <motion.div variants={itemVariants}>
           <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList className="w-full justify-start h-auto p-0 bg-transparent border-b border-border rounded-none">
+            <TabsList className="w-full justify-start h-auto p-0 bg-transparent border-b border-border rounded-none overflow-x-auto scrollbar-hide" style={{ scrollBehavior: 'smooth' }}>
               {[
                 { id: "overview", label: "Overview", icon: BarChart3 },
                 { id: "events", label: "Events", icon: Calendar },
@@ -91,7 +91,7 @@ export default function AdminDashboard() {
                 <TabsTrigger
                   key={tab.id}
                   value={tab.id}
-                  className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent px-4 py-3"
+                  className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent px-3 sm:px-4 py-3 whitespace-nowrap shrink-0"
                 >
                   <tab.icon className="w-4 h-4 mr-2" />
                   {tab.label}

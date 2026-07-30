@@ -55,7 +55,7 @@ export default function Home() {
       <Navigation />
 
       {/* Hero Section */}
-      <section className="relative w-full h-screen flex items-center justify-center pt-16 overflow-hidden">
+      <section className="relative w-full h-screen flex items-center justify-center pt-20 sm:pt-16 overflow-hidden">
         {/* Background Image with Overlay */}
         <div className="absolute inset-0 z-0">
           <img
@@ -71,7 +71,7 @@ export default function Home() {
         <div className="absolute inset-0 z-0 orbit-grid opacity-40"></div>
 
         {/* Radiant Core — the site's signature 3D element */}
-        <div className="absolute inset-0 z-[1] hidden md:flex items-center justify-end pr-4 lg:pr-20 pointer-events-none">
+        <div className="absolute inset-0 z-[1] hidden lg:flex items-center justify-end pr-4 lg:pr-20 pointer-events-none">
           <RadiantCore className="w-[26rem] h-[26rem] lg:w-[34rem] lg:h-[34rem] opacity-90" />
         </div>
 
@@ -88,9 +88,9 @@ export default function Home() {
             animate="animate"
             className="mb-8"
           >
-            <div className="w-36 h-36 mx-auto rounded-full bg-gradient-to-br from-ember via-primary to-ember p-[3px] glow-ring flex items-center justify-center">
+            <div className="w-28 h-28 sm:w-36 sm:h-36 mx-auto rounded-full bg-gradient-to-br from-ember via-primary to-ember p-[3px] glow-ring flex items-center justify-center">
               <div className="w-full h-full rounded-full bg-card/95 flex items-center justify-center overflow-hidden">
-                <img src="/logo/logo.png" alt="NICA Logo" className="w-36 h-36 object-contain" />
+                <img src="/logo/logo.png" alt="NICA Logo" className="w-28 h-28 sm:w-36 sm:h-36 object-contain" />
               </div>
             </div>
           </motion.div>
@@ -103,7 +103,7 @@ export default function Home() {
           {/* Main Heading */}
           <motion.h1
             variants={itemVariants}
-            className="text-5xl md:text-7xl font-bold mb-6 leading-tight"
+            className="text-3xl sm:text-5xl md:text-7xl font-bold mb-4 sm:mb-6 leading-tight"
           >
             <span className="text-glow">
               National Independence Church of Africa
@@ -115,7 +115,7 @@ export default function Home() {
           {/* Subtitle */}
           <motion.p
             variants={itemVariants}
-            className="text-lg md:text-xl text-muted-foreground mb-8 max-w-2xl mx-auto"
+            className="text-base sm:text-lg md:text-xl text-muted-foreground mb-6 sm:mb-8 max-w-2xl mx-auto"
           >
             Blending spiritual heritage with modern faith. Celebrating our Mau Mau era roots and continuing our mission of community transformation.
           </motion.p>

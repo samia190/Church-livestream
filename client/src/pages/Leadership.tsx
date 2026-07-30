@@ -70,12 +70,12 @@ export default function Leadership() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.8 }}
           >
-            <h1 className="text-5xl md:text-6xl font-bold mb-4">
+            <h1 className="text-3xl sm:text-5xl md:text-6xl font-bold mb-4">
               <span className="text-glow">
                 Church Leadership
               </span>
             </h1>
-            <p className="text-lg text-muted-foreground max-w-2xl">
+            <p className="text-base sm:text-lg text-muted-foreground max-w-2xl">
               Meet the dedicated clergy and leaders serving N.I.C.A. Kibugu Parish with spiritual commitment and pastoral excellence.
             </p>
           </motion.div>
@@ -87,7 +87,7 @@ export default function Leadership() {
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 1 }}
-        className="relative w-full h-96 overflow-hidden"
+        className="relative w-full h-48 sm:h-72 md:h-96 overflow-hidden"
       >
         <img
           src="https://d2xsxph8kpxj0f.cloudfront.net/310519663779111251/22XNoSU8LuRfCuqftFgkdg/leadership-clergy-modern-JYAjC2yN36TTrjyN29GPjq.webp"
@@ -105,7 +105,7 @@ export default function Leadership() {
             initial="hidden"
             whileInView="visible"
             viewport={{ once: true }}
-            className="grid md:grid-cols-2 gap-8"
+            className="grid sm:grid-cols-2 gap-4 sm:gap-8"
           >
             {leaders.map((leader, idx) => (
               <motion.div key={idx} variants={itemVariants}>
@@ -133,18 +133,18 @@ export default function Leadership() {
       </section>
 
       {/* Ministry Departments */}
-      <section className="py-20 px-4">
+      <section className="py-12 sm:py-20 px-4">
         <div className="max-w-6xl mx-auto">
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             whileInView={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.8 }}
             viewport={{ once: true }}
-            className="text-center mb-16"
+            className="text-center mb-12 sm:mb-16"
           >
             <p className="label-eyebrow mb-3">How We Serve</p>
-            <h2 className="text-4xl font-bold mb-4">Ministry Departments</h2>
-            <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
+            <h2 className="text-2xl sm:text-4xl font-bold mb-4">Ministry Departments</h2>
+            <p className="text-base sm:text-lg text-muted-foreground max-w-2xl mx-auto">
               Our church is organized into various ministry departments, each serving specific community needs.
             </p>
           </motion.div>
@@ -154,7 +154,7 @@ export default function Leadership() {
             initial="hidden"
             whileInView="visible"
             viewport={{ once: true }}
-            className="grid md:grid-cols-2 lg:grid-cols-3 gap-6"
+            className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6"
           >
             {[
               {
@@ -194,7 +194,7 @@ export default function Leadership() {
       </section>
 
       {/* Contact CTA */}
-      <section className="py-16 px-4">
+      <section className="py-8 sm:py-16 px-4">
         <div className="max-w-4xl mx-auto text-center glass-panel p-10 md:p-14">
           <motion.div
             initial={{ opacity: 0, y: 20 }}

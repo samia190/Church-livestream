@@ -61,6 +61,7 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
     const captureLoopRef = useRef<number | null>(null);
     const preloadedImageRef = useRef<HTMLImageElement | null>(null);
     const sourceNodeRef = useRef<MediaElementAudioSourceNode | null>(null);
+    const captureGainNodeRef = useRef<GainNode | null>(null);
 
     const current = currentIndex >= 0 ? mediaList[currentIndex] : null;
 
@@ -86,6 +87,12 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
       if (audioRef.current) {
         audioRef.current.volume = vol;
         audioRef.current.muted = muted;
+      }
+
+      // Professional: Update capture gain node with smooth ramping
+      if (captureGainNodeRef.current && audioContextRef.current) {
+        const now = audioContextRef.current.currentTime;
+        captureGainNodeRef.current.gain.setTargetAtTime(vol, now, 0.05);
       }
     }, [volume, muted]);
 
@@ -277,6 +284,7 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
         // Create a gain node to control volume/mute
         const gainNode = audioContext.createGain();
         gainNode.gain.value = muted ? 0 : volume / 100;
+        captureGainNodeRef.current = gainNode;
 
         // Route: source → gain → destination (capture) AND source → gain → speakers (monitor)
         source.connect(gainNode);
@@ -469,9 +477,9 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
     }, []);
 
     return (
-      <Card className="bg-slate-900/40 border-slate-800 overflow-hidden flex flex-col h-full">
+      <Card className="bg-slate-900/40 border-slate-800 overflow-hidden flex flex-col h-full rounded-xl sm:rounded-3xl">
         {/* Header */}
-        <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-900/60">
+        <div className="p-3 sm:p-4 border-b border-slate-800 flex items-center justify-between bg-slate-900/60">
           <div className="flex items-center gap-2">
             <Monitor className="w-4 h-4 text-primary" />
             <h3 className="font-bold text-white text-sm">Pre-Stream Studio</h3>
@@ -536,19 +544,21 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
 
         <div className="flex-1 flex flex-col min-h-0">
           {/* Main Preview Screen */}
-          <div className="relative aspect-video bg-black group">
+          <div className="relative aspect-video bg-black group rounded-xl sm:rounded-2xl overflow-hidden">
             {current ? (
               <div className="w-full h-full flex items-center justify-center">
                 {current.type === "video" && (
-                  <video
-                    ref={videoRef}
-                    src={current.url}
-                    className="w-full h-full object-contain"
-                    onTimeUpdate={e => setCurrentTime(e.currentTarget.currentTime)}
-                    onLoadedMetadata={e => setDuration(e.currentTarget.duration)}
-                    onEnded={() => { if (!loop) handleNext(); }}
-                    playsInline
-                  />
+                    <video
+                      ref={videoRef}
+                      src={current.url}
+                      className="w-full h-full object-contain"
+                      onTimeUpdate={e => setCurrentTime(e.currentTarget.currentTime)}
+                      onLoadedMetadata={e => setDuration(e.currentTarget.duration)}
+                      onEnded={() => { if (!loop) handleNext(); }}
+                      playsInline
+                      preload="metadata"
+                      controlsList="nodownload noplaybackrate"
+                    />
                 )}
                 {current.type === "image" && (
                   <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-slate-900 to-slate-950">
@@ -632,11 +642,11 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
           </div>
 
           {/* Controls Area */}
-          <div className="p-4 bg-slate-900/80 border-t border-slate-800">
+          <div className="p-3 sm:p-4 bg-slate-900/80 border-t border-slate-800">
             {/* Progress Bar */}
             {(current?.type === "video" || current?.type === "audio") && (
-              <div className="flex items-center gap-3 mb-4">
-                <span className="text-[10px] font-mono text-slate-500 w-8">{formatTime(currentTime)}</span>
+              <div className="flex items-center gap-2 mb-3">
+                <span className="text-[9px] font-mono text-slate-500 w-7">{formatTime(currentTime)}</span>
                 <Slider
                   value={[currentTime]}
                   max={duration || 100}
@@ -648,12 +658,12 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
                   }}
                   className="flex-1"
                 />
-                <span className="text-[10px] font-mono text-slate-500 w-8">{formatTime(duration)}</span>
+                <span className="text-[9px] font-mono text-slate-500 w-7">{formatTime(duration)}</span>
               </div>
             )}
 
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div className="flex items-center gap-0.5">
                 <Button variant="ghost" size="icon" className="h-8 w-8 text-slate-400" onClick={handlePrev}>
                   <SkipBack className="w-4 h-4" />
                 </Button>
@@ -670,8 +680,8 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
                 </Button>
               </div>
 
-              <div className="flex items-center gap-4">
-                <div className="flex items-center gap-2 w-24">
+              <div className="flex items-center gap-2 sm:gap-4">
+                <div className="hidden sm:flex items-center gap-2 w-24">
                   <Button variant="ghost" size="icon" className="h-7 w-7 text-slate-500" onClick={toggleMute}>
                     {muted || volume === 0 ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
                   </Button>
@@ -695,7 +705,7 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
           </div>
 
           {/* Playlist Area */}
-          <div className="flex-1 min-h-0 bg-slate-950/50 p-2 overflow-y-auto playlist-scrollbar">
+          <div className="flex-1 min-h-0 bg-slate-950/50 p-2 overflow-y-auto playlist-scrollbar max-h-[200px] sm:max-h-none">
             <div className="space-y-1">
               {mediaList.length === 0 ? (
                 <div className="py-8 text-center text-slate-600 text-xs italic">
