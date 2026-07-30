@@ -128,6 +128,7 @@ export default function Sermons() {
         <img
           src="https://d2xsxph8kpxj0f.cloudfront.net/310519663779111251/22XNoSU8LuRfCuqftFgkdg/sermons-media-broadcast-PLiweoLYZSD9HWrE5QubbG.webp"
           alt="Sermons and Media"
+          loading="lazy"
           className="w-full h-full object-cover"
         />
         <div className="absolute inset-0 bg-gradient-to-t from-background to-transparent"></div>

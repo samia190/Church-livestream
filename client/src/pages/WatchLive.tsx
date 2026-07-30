@@ -1,18 +1,15 @@
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Radio, Users, Clock, Share2, Heart, MessageCircle, Play, Volume2, VolumeX, Send } from 'lucide-react';
-
+import { Radio, Users, Clock, Share2, Heart, MessageCircle, Play, Volume2, VolumeX, Send, Info } from 'lucide-react';
 import { Link } from 'wouter';
 import { useEffect, useRef, useState } from 'react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import Navigation from '@/components/Navigation';
 import { useViewer } from '@/hooks/useViewer';
 import { toast } from 'sonner';
 
-
-
 export default function WatchLive() {
-  const { remoteStream, meta, chatMessages, sendChatMessage } = useViewer();
+  const { remoteStream, meta, chatMessages, sendChatMessage, connectionState } = useViewer();
   const videoRef = useRef<HTMLVideoElement>(null);
   const [muted, setMuted] = useState(true);
   const [chatInput, setChatInput] = useState("");
@@ -93,27 +90,10 @@ export default function WatchLive() {
       thumbnail: 'https://d2xsxph8kpxj0f.cloudfront.net/310519663779111251/22XNoSU8LuRfCuqftFgkdg/sermons-media-broadcast-Q84LZ6m6F67AnXSBo3UuYP.webp',
       views: 1890,
     },
-    {
-      id: 3,
-      title: 'God\'s Love Never Fails',
-      speaker: 'Bishop Samuel Kipchoge',
-      date: 'June 2, 2026',
-      duration: '42 min',
-      thumbnail: 'https://d2xsxph8kpxj0f.cloudfront.net/310519663779111251/22XNoSU8LuRfCuqftFgkdg/sermons-media-broadcast-Q84LZ6m6F67AnXSBo3UuYP.webp',
-      views: 3120,
-    },
-    {
-      id: 4,
-      title: 'Living in Victory',
-      speaker: 'Pastor David Kiplagat',
-      date: 'May 26, 2026',
-      duration: '40 min',
-      thumbnail: 'https://d2xsxph8kpxj0f.cloudfront.net/310519663779111251/22XNoSU8LuRfCuqftFgkdg/sermons-media-broadcast-Q84LZ6m6F67AnXSBo3UuYP.webp',
-      views: 2560,
-    },
   ];
 
   const isLive = meta.isLive;
+  const broadcastMode = meta.broadcastMode;
   const streamTitle = meta.title || 'Sunday Morning Worship';
   const streamDescription = meta.description || 'Join us for our main worship service';
 
@@ -127,7 +107,7 @@ export default function WatchLive() {
   };
 
   return (
-    <div className="min-h-screen text-foreground">
+    <div className="min-h-screen text-foreground bg-void">
       <Navigation />
 
       {/* Live Stream Section */}
@@ -138,7 +118,7 @@ export default function WatchLive() {
         className="max-w-7xl mx-auto px-4 pt-24 pb-12"
       >
         <motion.div variants={itemVariants} className="mb-8">
-          <div className="relative rounded-2xl overflow-hidden bg-black aspect-video flex items-center justify-center glass-panel">
+          <div className="relative rounded-2xl overflow-hidden bg-black aspect-video flex items-center justify-center border border-primary/20 shadow-2xl group">
             {/* Live Stream Video Player */}
             {isLive && remoteStream ? (
               <video
@@ -150,7 +130,7 @@ export default function WatchLive() {
               />
             ) : (
               <div className="absolute inset-0 bg-gradient-to-br from-primary/10 via-void to-void flex flex-col items-center justify-center orbit-grid">
-                <Play className="w-24 h-24 text-primary/60 mb-4" />
+                <Play className="w-24 h-24 text-primary/60 mb-4 animate-pulse" />
                 <p className="text-foreground text-xl font-semibold mb-2">
                   {isLive ? 'Connecting to stream...' : 'No Live Stream Right Now'}
                 </p>
@@ -162,46 +142,102 @@ export default function WatchLive() {
               </div>
             )}
 
-            {/* Live Indicator */}
+            {/* Professional Overlays */}
             {isLive && (
-              <motion.div
-                animate={{ scale: [1, 1.1, 1] }}
-                transition={{ duration: 2, repeat: Infinity }}
-                className="absolute top-4 right-4 flex items-center gap-2 bg-red-600 px-4 py-2 rounded-full"
-              >
-                <div className="w-3 h-3 bg-white rounded-full animate-pulse" />
-                <span className="text-white font-bold text-sm">LIVE NOW</span>
-              </motion.div>
-            )}
+              <>
+                {/* Church Logo at Top Left */}
+                <div className="absolute top-6 left-6 z-20 flex items-center gap-3">
+                  <div className="w-12 h-12 bg-white/10 backdrop-blur-md rounded-xl p-2 border border-white/20 shadow-lg">
+                    <img src="/logo/logo.png" alt="Church Logo" className="w-full h-full object-contain" />
+                  </div>
+                  <div className="hidden sm:block">
+                    <p className="text-white font-bold text-sm drop-shadow-md">N.I.C.A. KIBUGU</p>
+                    <p className="text-white/70 text-[10px] uppercase tracking-widest drop-shadow-sm">Official Stream</p>
+                  </div>
+                </div>
 
-            {/* Mute toggle */}
-            {isLive && remoteStream && (
-              <button
-                onClick={() => setMuted(m => !m)}
-                className="absolute bottom-4 right-4 bg-black/60 backdrop-blur p-3 rounded-full hover:bg-black/80 transition-colors"
-                aria-label={muted ? 'Unmute' : 'Mute'}
-              >
-                {muted ? <VolumeX className="w-5 h-5 text-white" /> : <Volume2 className="w-5 h-5 text-white" />}
-              </button>
-            )}
+                {/* Mode Indicator at Top Right */}
+                <div className="absolute top-6 right-6 z-20 flex flex-col items-end gap-2">
+                  <AnimatePresence mode="wait">
+                    {broadcastMode === 'live' ? (
+                      <motion.div
+                        key="live-badge"
+                        initial={{ opacity: 0, x: 20 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        exit={{ opacity: 0, x: -20 }}
+                        className="flex items-center gap-2 bg-red-600 px-4 py-2 rounded-full shadow-lg"
+                      >
+                        <div className="w-2 h-2 bg-white rounded-full animate-pulse" />
+                        <span className="text-white font-bold text-xs tracking-wider uppercase">Live Now</span>
+                      </motion.div>
+                    ) : (
+                      <motion.div
+                        key="prestream-badge"
+                        initial={{ opacity: 0, x: 20 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        exit={{ opacity: 0, x: -20 }}
+                        className="flex items-center gap-2 bg-ember px-4 py-2 rounded-full shadow-lg"
+                      >
+                        <Clock className="w-3 h-3 text-white" />
+                        <span className="text-white font-bold text-xs tracking-wider uppercase">Pre-Stream</span>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                  
+                  <div className="bg-black/40 backdrop-blur-md px-3 py-1 rounded-md border border-white/10 flex items-center gap-2">
+                    <Users className="w-3 h-3 text-ember" />
+                    <span className="text-white text-[10px] font-mono">{meta.viewers.toLocaleString()} Watching</span>
+                  </div>
+                </div>
 
-            {/* Viewer Count */}
-            <div className="absolute bottom-4 left-4 flex items-center gap-2 bg-black/60 backdrop-blur px-4 py-2 rounded-full">
-              <Users className="w-4 h-4 text-ember" />
-              <span className="text-white font-semibold">{meta.viewers.toLocaleString()} watching</span>
-            </div>
+                {/* Moving Ticker at Bottom */}
+                <div className="absolute bottom-0 left-0 right-0 z-20 bg-gradient-to-t from-black/80 to-transparent pt-12 pb-4 px-6">
+                  <div className="relative overflow-hidden h-6 flex items-center">
+                    <motion.div
+                      animate={{ x: ["100%", "-100%"] }}
+                      transition={{ duration: 20, repeat: Infinity, ease: "linear" }}
+                      className="whitespace-nowrap flex items-center gap-12"
+                    >
+                      <span className="text-white/90 text-sm font-medium flex items-center gap-2">
+                        <Info className="w-4 h-4 text-ember" />
+                        Welcome to N.I.C.A. Kibugu Online Service
+                      </span>
+                      <span className="text-white/90 text-sm font-medium">
+                        Current Session: {streamTitle}
+                      </span>
+                      <span className="text-white/90 text-sm font-medium">
+                        Follow us on social media for more updates
+                      </span>
+                      <span className="text-white/90 text-sm font-medium">
+                        God bless you as you join us today!
+                      </span>
+                    </motion.div>
+                  </div>
+                </div>
+
+                {/* Mute toggle */}
+                <button
+                  onClick={() => setMuted(m => !m)}
+                  className="absolute bottom-16 right-6 z-30 bg-black/40 backdrop-blur-md p-3 rounded-full hover:bg-black/60 transition-colors border border-white/10"
+                  aria-label={muted ? 'Unmute' : 'Mute'}
+                >
+                  {muted ? <VolumeX className="w-5 h-5 text-white" /> : <Volume2 className="w-5 h-5 text-white" />}
+                </button>
+              </>
+            )}
           </div>
         </motion.div>
 
         {/* Stream Info & Chat */}
         <motion.div variants={itemVariants} className="grid lg:grid-cols-3 gap-8 mb-12">
           <div className="lg:col-span-2">
-            <div className="glass-panel p-8 mb-8">
-              <h2 className="text-3xl font-bold mb-4">{streamTitle}</h2>
+            <div className="glass-panel p-8 mb-8 relative overflow-hidden">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-primary/5 rounded-full -mr-16 -mt-16 blur-3xl" />
+              <h2 className="text-3xl font-bold mb-4 text-foreground drop-shadow-sm">{streamTitle}</h2>
               <p className="text-muted-foreground mb-8 text-lg leading-relaxed">{streamDescription}</p>
 
               <div className="flex flex-wrap gap-4">
-                <Button className="bg-ember hover:bg-ember/90 text-ember-foreground gap-2 px-6 py-6 h-auto text-lg font-bold">
+                <Button className="bg-ember hover:bg-ember/90 text-ember-foreground gap-2 px-6 py-6 h-auto text-lg font-bold shadow-lg shadow-ember/20">
                   <Heart className="w-5 h-5" />
                   Like
                 </Button>
@@ -221,13 +257,13 @@ export default function WatchLive() {
             {/* Stream Stats (Mobile/Tablet) */}
             <div className="lg:hidden grid grid-cols-2 gap-4 mb-8">
                <div className="glass-panel p-4 flex flex-col items-center justify-center text-center">
-                 <p className="text-sm text-muted-foreground mb-1 font-mono uppercase tracking-wider">Status</p>
+                 <p className="text-xs text-muted-foreground mb-1 font-mono uppercase tracking-wider">Status</p>
                  <p className={`text-xl font-black ${isLive ? 'text-signal' : 'text-muted-foreground'}`}>
-                   {isLive ? 'LIVE' : 'OFFLINE'}
+                   {isLive ? broadcastMode.toUpperCase() : 'OFFLINE'}
                  </p>
                </div>
                <div className="glass-panel p-4 flex flex-col items-center justify-center text-center">
-                 <p className="text-sm text-muted-foreground mb-1 font-mono uppercase tracking-wider">Viewers</p>
+                 <p className="text-xs text-muted-foreground mb-1 font-mono uppercase tracking-wider">Viewers</p>
                  <p className="text-xl font-black text-ember">{meta.viewers.toLocaleString()}</p>
                </div>
             </div>
@@ -243,8 +279,8 @@ export default function WatchLive() {
                   Live Chat
                 </h3>
                 <div className="flex items-center gap-1.5 text-xs font-mono text-muted-foreground">
-                  <div className="w-2 h-2 rounded-full bg-signal" />
-                  Connected
+                  <div className={`w-2 h-2 rounded-full ${connectionState === 'connected' ? 'bg-signal' : 'bg-red-500'}`} />
+                  {connectionState === 'connected' ? 'Connected' : 'Connecting...'}
                 </div>
               </div>
               
@@ -255,8 +291,8 @@ export default function WatchLive() {
                     <p className="text-sm">Welcome to the live chat!</p>
                   </div>
                 ) : (
-                  chatMessages.map((msg) => (
-                    <div key={msg.id} className="flex flex-col gap-1">
+                  chatMessages.map((msg, idx) => (
+                    <div key={idx} className="flex flex-col gap-1">
                       <div className="flex items-baseline gap-2">
                         <span className={`text-xs font-bold ${msg.role === 'admin' ? 'text-ember' : 'text-primary'}`}>
                           {msg.user}
@@ -299,18 +335,18 @@ export default function WatchLive() {
               </h3>
               <div className="space-y-4">
                 <div className="flex justify-between items-center p-3 bg-primary/5 rounded-lg border border-primary/10">
-                  <span className="text-sm text-muted-foreground font-mono uppercase tracking-wider">Status</span>
+                  <span className="text-xs text-muted-foreground font-mono uppercase tracking-wider">Status</span>
                   <span className={`text-sm font-black ${isLive ? 'text-signal' : 'text-muted-foreground'}`}>
-                    {isLive ? 'LIVE' : 'OFFLINE'}
+                    {isLive ? broadcastMode.toUpperCase() : 'OFFLINE'}
                   </span>
                 </div>
                 <div className="flex justify-between items-center p-3 bg-primary/5 rounded-lg border border-primary/10">
-                  <span className="text-sm text-muted-foreground font-mono uppercase tracking-wider">Viewers</span>
+                  <span className="text-xs text-muted-foreground font-mono uppercase tracking-wider">Viewers</span>
                   <span className="text-sm font-black text-ember">{meta.viewers.toLocaleString()}</span>
                 </div>
                 {isLive && meta.startTime > 0 && (
                    <div className="flex justify-between items-center p-3 bg-primary/5 rounded-lg border border-primary/10">
-                    <span className="text-sm text-muted-foreground font-mono uppercase tracking-wider">Uptime</span>
+                    <span className="text-xs text-muted-foreground font-mono uppercase tracking-wider">Uptime</span>
                     <span className="text-sm font-black text-primary font-mono">
                       {Math.floor((Date.now() - meta.startTime) / 60000)}m
                     </span>
@@ -329,57 +365,21 @@ export default function WatchLive() {
             {upcomingServices.map((service) => (
               <motion.div
                 key={service.id}
-                className="tilt-card glass-panel overflow-hidden cursor-pointer"
+                className="tilt-card glass-panel overflow-hidden cursor-pointer group"
               >
                 <div className="aspect-video relative overflow-hidden">
-                  <img src={service.thumbnail} alt={service.title} className="w-full h-full object-cover opacity-60" />
-                  <div className="absolute inset-0 flex items-center justify-center bg-void/30">
-                    <Radio className="w-12 h-12 text-ember" />
+                  <img src={service.thumbnail} alt={service.title} loading="lazy" className="w-full h-full object-cover opacity-60 group-hover:scale-110 transition-transform duration-500" />
+                  <div className="absolute inset-0 flex items-center justify-center bg-void/30 group-hover:bg-void/10 transition-colors">
+                    <Play className="w-12 h-12 text-white/50 group-hover:text-white transition-colors" />
                   </div>
                 </div>
-                <div className="p-4">
-                  <h4 className="font-bold mb-2">{service.title}</h4>
-                  <p className="text-sm text-muted-foreground mb-3">{service.description}</p>
-                  <div className="space-y-2 text-sm text-muted-foreground font-mono">
-                    <div className="flex items-center gap-2">
-                      <Clock className="w-4 h-4 text-ember" />
-                      <span>{service.date}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Clock className="w-4 h-4 text-ember" />
-                      <span>{service.time}</span>
-                    </div>
+                <div className="p-6">
+                  <h4 className="font-bold text-xl mb-2 group-hover:text-primary transition-colors">{service.title}</h4>
+                  <div className="flex items-center gap-2 text-muted-foreground text-sm mb-4">
+                    <Clock className="w-4 h-4" />
+                    {service.date} • {service.time}
                   </div>
-                </div>
-              </motion.div>
-            ))}
-          </div>
-        </motion.div>
-
-        {/* Recent Sermons */}
-        <motion.div variants={itemVariants}>
-          <p className="label-eyebrow mb-2">Catch Up</p>
-          <h3 className="text-2xl font-bold mb-6">Recent Sermons</h3>
-          <div className="grid md:grid-cols-4 gap-6">
-            {recentSermons.map((sermon) => (
-              <motion.div
-                key={sermon.id || sermon.title}
-                className="tilt-card glass-panel overflow-hidden cursor-pointer"
-              >
-                <div className="aspect-video relative overflow-hidden group">
-                  <img src={sermon.thumbnail} alt={sermon.title} className="w-full h-full object-cover opacity-60 group-hover:opacity-80 transition" />
-                  <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition bg-void/30">
-                    <Play className="w-12 h-12 text-ember" />
-                  </div>
-                  <div className="absolute top-2 right-2 bg-black/60 px-2 py-1 rounded text-xs text-white font-mono">{sermon.duration}</div>
-                </div>
-                <div className="p-4">
-                  <h4 className="font-bold mb-1 line-clamp-2">{sermon.title}</h4>
-                  <p className="text-sm text-ember mb-3">{sermon.speaker}</p>
-                  <div className="flex justify-between items-center text-xs text-muted-foreground font-mono">
-                    <span>{sermon.date}</span>
-                    <span>{sermon.views.toLocaleString()} views</span>
-                  </div>
+                  <p className="text-sm text-muted-foreground line-clamp-2">{service.description}</p>
                 </div>
               </motion.div>
             ))}

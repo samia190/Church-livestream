@@ -76,6 +76,7 @@ export const ModernLiveStudio: React.FC = () => {
 
   // Pre-stream media
   const [showPreStream, setShowPreStream] = useState(false);
+  const [activePreStream, setActivePreStream] = useState<MediaStream | null>(null);
 
   // Initialize camera on mount
   useEffect(() => {
@@ -93,7 +94,21 @@ export const ModernLiveStudio: React.FC = () => {
   }, [stream]);
 
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const { viewerCount, streamStats, startBroadcast, stopBroadcast, updateBroadcast, updateLocalStream, connected: signalingConnected, chatMessages: liveChatMessages, sendChatMessage, deleteChatMessage } = useBroadcaster();
+  const { 
+    viewerCount, 
+    streamStats, 
+    broadcastMode,
+    startBroadcast, 
+    stopBroadcast, 
+    updateBroadcast, 
+    updateLocalStream, 
+    replaceStream,
+    restoreOriginalStream,
+    connected: signalingConnected, 
+    chatMessages: liveChatMessages, 
+    sendChatMessage, 
+    deleteChatMessage 
+  } = useBroadcaster();
 
   const { mutateAsync: goLiveMutation, isPending: goLivePending } = trpc.streaming.goLive.useMutation();
   const { mutateAsync: endLiveMutation } = trpc.streaming.endLive.useMutation();
@@ -131,14 +146,20 @@ export const ModernLiveStudio: React.FC = () => {
       });
       setSessionId(result.sessionId);
       peakViewersRef.current = 0;
-      startBroadcast(stream, {
+      
+      // Use pre-stream if active, otherwise use camera
+      const initialStream = activePreStream || stream;
+      const initialMode = activePreStream ? "pre-stream" : "live";
+      
+      startBroadcast(initialStream, {
         sessionId: result.sessionId,
         title: streamTitle,
         description: streamDescription,
       });
+      
       setIsLive(true);
       setShowPreStream(false);
-      toast.success('🔴 LIVE NOW — anyone on Watch Live can see you');
+      toast.success(`🔴 Session started in ${initialMode} mode`);
     } catch (err) {
       console.error('Go live failed:', err);
       toast.error('Failed to go live. Check your connection and try again.');
@@ -257,15 +278,33 @@ export const ModernLiveStudio: React.FC = () => {
     toast.success('Message removed');
   };
 
-  const handlePreStreamMediaActivate = (mediaStream: MediaStream | null) => {
-    if (mediaStream) {
-      if (videoRef.current) {
-        videoRef.current.srcObject = mediaStream;
+  const handlePreStreamMediaActivate = async (mediaStream: MediaStream | null) => {
+    setActivePreStream(mediaStream);
+    try {
+      if (mediaStream) {
+        // Update local preview
+        if (videoRef.current) {
+          videoRef.current.srcObject = mediaStream;
+        }
+        // If we are already live, broadcast this media stream to viewers
+        if (isLive) {
+          await replaceStream(mediaStream);
+          toast.info('Broadcasting pre-stream media to viewers');
+        }
+      } else if (stream) {
+        // Update local preview back to camera
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+        }
+        // If we are already live, restore the camera stream for viewers
+        if (isLive) {
+          await restoreOriginalStream(stream);
+          toast.info('Switched back to live camera');
+        }
       }
-    } else if (stream) {
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-      }
+    } catch (err) {
+      console.error('Failed to switch stream:', err);
+      toast.error('Failed to switch broadcast stream');
     }
   };
 

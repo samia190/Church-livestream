@@ -93,8 +93,8 @@ export function useCameraDevices() {
 
   const acquireStream = useCallback(
     async (constraints: MediaStreamConstraints) => {
-      const newStream = await navigator.mediaDevices.getUserMedia(constraints);
       stopCurrentStream();
+      const newStream = await navigator.mediaDevices.getUserMedia(constraints);
       streamRef.current = newStream;
       setStream(newStream);
       setError(null);

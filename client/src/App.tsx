@@ -5,6 +5,7 @@ import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import AmbientField from "./components/three/AmbientField";
+import NotificationManager from "./components/NotificationManager";
 import Home from "./pages/Home";
 import History from "./pages/History";
 import Leadership from "./pages/Leadership";
@@ -55,6 +56,7 @@ function App() {
         <TooltipProvider>
           <Toaster />
           <AmbientField />
+          <NotificationManager />
           <div className="relative z-10">
             <Router />
           </div>

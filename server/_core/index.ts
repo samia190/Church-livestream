@@ -8,7 +8,7 @@ import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
-import { attachSignalingServer } from "./signaling";
+import { attachSignalingServer } from "./signaling.enhanced";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
