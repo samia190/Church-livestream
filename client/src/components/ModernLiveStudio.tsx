@@ -274,6 +274,21 @@ export const ModernLiveStudio: React.FC = () => {
     }
   };
 
+  const handleShare = async () => {
+    const url = `${window.location.origin}/watch-live`;
+    try {
+      await navigator.clipboard.writeText(url);
+      toast.success('Watch Live link copied to clipboard');
+    } catch {
+      toast.info(url);
+    }
+  };
+
+  const handleRescan = async () => {
+    await camera.refreshDevices(true);
+    toast.success(`Scan complete — ${camera.devices.length} cameras found`);
+  };
+
   const toggleSection = (section: keyof SectionState) => {
     setExpandedSections(prev => ({ ...prev, [section]: !prev[section] }));
   };
