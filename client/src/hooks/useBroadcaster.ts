@@ -10,6 +10,8 @@ interface StartBroadcastArgs {
   sessionId: string;
   title: string;
   description?: string;
+  /** The initial broadcast mode: "live" or "pre-stream" */
+  initialMode?: "live" | "pre-stream";
 }
 
 export type BroadcastMode = "offline" | "pre-stream" | "live";
@@ -18,6 +20,7 @@ export function useBroadcaster() {
   const wsRef = useRef<WebSocket | null>(null);
   const peersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
+  const originalCameraStreamRef = useRef<MediaStream | null>(null);
   const [connected, setConnected] = useState(false);
   const [isLive, setIsLive] = useState(false);
   const [broadcastMode, setBroadcastMode] = useState<BroadcastMode>("offline");
@@ -190,6 +193,10 @@ export function useBroadcaster() {
   const startBroadcast = useCallback(
     (stream: MediaStream, session: StartBroadcastArgs) => {
       localStreamRef.current = stream;
+      // Save the original camera stream for later restoration
+      originalCameraStreamRef.current = stream;
+
+      const initialMode = session.initialMode || "live";
 
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const ws = new WebSocket(`${protocol}//${window.location.host}/api/stream-sync`);
@@ -204,11 +211,11 @@ export function useBroadcaster() {
             sessionId: session.sessionId,
             title: session.title,
             description: session.description || "",
-            broadcastMode: "live",
+            broadcastMode: initialMode,
           })
         );
         setIsLive(true);
-        setBroadcastMode("live");
+        setBroadcastMode(initialMode);
       };
       ws.onmessage = handleMessage;
       ws.onclose = () => {
@@ -232,6 +239,7 @@ export function useBroadcaster() {
     peersRef.current.clear();
 
     localStreamRef.current = null;
+    originalCameraStreamRef.current = null;
     setIsLive(false);
     setViewerCount(0);
     setBroadcastMode("offline");
@@ -251,8 +259,7 @@ export function useBroadcaster() {
 
   /**
    * Replace the current broadcast stream with a new one.
-   * This is used to switch between camera and pre-stream media.
-   * Uses RTCRtpSender.replaceTrack() to avoid reconnection.
+   * Used to switch between camera and pre-stream media while live.
    */
   const replaceStream = useCallback(async (newStream: MediaStream | null) => {
     if (!newStream) {
@@ -265,24 +272,23 @@ export function useBroadcaster() {
       const newAudioTrack = newStream.getAudioTracks()[0];
 
       // Replace tracks in all peer connections
-      for (const pc of peersRef.current.values()) {
+      for (const pc of Array.from(peersRef.current.values())) {
         const senders = pc.getSenders();
 
         for (const sender of senders) {
           if (sender.track?.kind === "video" && newVideoTrack) {
             await sender.replaceTrack(newVideoTrack);
-            console.log("[useBroadcaster] Video track replaced");
+            console.log("[useBroadcaster] Video track replaced with media");
           } else if (sender.track?.kind === "audio" && newAudioTrack) {
             await sender.replaceTrack(newAudioTrack);
-            console.log("[useBroadcaster] Audio track replaced");
+            console.log("[useBroadcaster] Audio track replaced with media");
           }
         }
       }
 
-      // Update local stream reference
       localStreamRef.current = newStream;
 
-      // Notify server of mode change
+      // Notify server of mode change to pre-stream
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({
           type: "broadcast-mode-changed",
@@ -291,7 +297,7 @@ export function useBroadcaster() {
       }
 
       setBroadcastMode("pre-stream");
-      console.log("[useBroadcaster] Stream replaced successfully");
+      console.log("[useBroadcaster] Stream replaced with pre-stream media");
     } catch (error) {
       console.error("[useBroadcaster] Failed to replace stream:", error);
       throw error;
@@ -301,21 +307,26 @@ export function useBroadcaster() {
   /**
    * Switch back to the original camera/microphone stream.
    */
-  const restoreOriginalStream = useCallback(async (originalStream: MediaStream) => {
+  const restoreOriginalStream = useCallback(async () => {
+    const originalStream = originalCameraStreamRef.current;
+    if (!originalStream) {
+      throw new Error("Original camera stream not available");
+    }
+
     try {
       const videoTrack = originalStream.getVideoTracks()[0];
       const audioTrack = originalStream.getAudioTracks()[0];
 
-      for (const pc of peersRef.current.values()) {
+      for (const pc of Array.from(peersRef.current.values())) {
         const senders = pc.getSenders();
 
         for (const sender of senders) {
           if (sender.track?.kind === "video" && videoTrack) {
             await sender.replaceTrack(videoTrack);
-            console.log("[useBroadcaster] Video track restored");
+            console.log("[useBroadcaster] Video track restored to camera");
           } else if (sender.track?.kind === "audio" && audioTrack) {
             await sender.replaceTrack(audioTrack);
-            console.log("[useBroadcaster] Audio track restored");
+            console.log("[useBroadcaster] Audio track restored to microphone");
           }
         }
       }
@@ -330,15 +341,19 @@ export function useBroadcaster() {
       }
 
       setBroadcastMode("live");
-      console.log("[useBroadcaster] Stream restored successfully");
+      console.log("[useBroadcaster] Stream restored to live camera");
     } catch (error) {
       console.error("[useBroadcaster] Failed to restore stream:", error);
       throw error;
     }
   }, []);
 
+  /**
+   * Update the local stream when camera device is switched.
+   */
   const updateLocalStream = useCallback((newStream: MediaStream) => {
     localStreamRef.current = newStream;
+    originalCameraStreamRef.current = newStream;
     const newVideoTrack = newStream.getVideoTracks()[0];
     const newAudioTrack = newStream.getAudioTracks()[0];
 
@@ -351,6 +366,21 @@ export function useBroadcaster() {
         }
       });
     });
+  }, []);
+
+  /**
+   * Go live from pre-stream mode — switch the server mode to "live"
+   * while keeping the same stream.
+   */
+  const goLiveFromPreStream = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: "broadcast-mode-changed",
+        broadcastMode: "live",
+      }));
+    }
+    setBroadcastMode("live");
+    console.log("[useBroadcaster] Transitioned from pre-stream to live");
   }, []);
 
   return {
@@ -367,6 +397,7 @@ export function useBroadcaster() {
     updateLocalStream,
     replaceStream,
     restoreOriginalStream,
+    goLiveFromPreStream,
     sendChatMessage,
     deleteChatMessage,
   };

@@ -6,12 +6,14 @@ import { Input } from '@/components/ui/input';
 import { Slider } from '@/components/ui/slider';
 import ProfessionalAudioMixer from './ProfessionalAudioMixer';
 import PreStreamMediaPlayer from './PreStreamMediaPlayer';
+import type { PreStreamMediaPlayerRef } from './PreStreamMediaPlayer';
 import StreamAnalyticsEnhanced from './StreamAnalyticsEnhanced';
 import {
   Video, Mic, Settings, MessageSquare, Radio, Camera, Volume2,
   Eye, Zap, AlertCircle, CheckCircle, Plus, X, Send,
   Square, RefreshCw, FlipHorizontal, Usb, Loader2, Scan,
-  Monitor, Wifi, WifiOff, Film, Play, Pause, ChevronDown, ChevronUp
+  Monitor, Wifi, WifiOff, Film, Play, Pause, ChevronDown, ChevronUp,
+  MonitorPlay, Layers, SwitchCamera
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { trpc } from '@/lib/trpc';
@@ -33,7 +35,10 @@ interface SectionState {
   audio: boolean;
   chat: boolean;
   settings: boolean;
+  overlay: boolean;
 }
+
+type OverlaySource = 'camera' | 'media' | null;
 
 export const ModernLiveStudio: React.FC = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -48,6 +53,7 @@ export const ModernLiveStudio: React.FC = () => {
     audio: true,
     chat: true,
     settings: true,
+    overlay: true,
   });
 
   // Stream settings
@@ -74,9 +80,12 @@ export const ModernLiveStudio: React.FC = () => {
     dropped: 0,
   });
 
-  // Pre-stream media
+  // Pre-stream / overlay media
   const [showPreStream, setShowPreStream] = useState(false);
-  const [activePreStream, setActivePreStream] = useState<MediaStream | null>(null);
+  const [activeOverlayStream, setActiveOverlayStream] = useState<MediaStream | null>(null);
+  const [overlaySource, setOverlaySource] = useState<OverlaySource>(null);
+  const [isOverlayActive, setIsOverlayActive] = useState(false);
+  const preStreamRef = useRef<PreStreamMediaPlayerRef>(null);
 
   // Initialize camera on mount
   useEffect(() => {
@@ -104,6 +113,7 @@ export const ModernLiveStudio: React.FC = () => {
     updateLocalStream, 
     replaceStream,
     restoreOriginalStream,
+    goLiveFromPreStream,
     connected: signalingConnected, 
     chatMessages: liveChatMessages, 
     sendChatMessage, 
@@ -129,6 +139,9 @@ export const ModernLiveStudio: React.FC = () => {
     }
   }, [isLive, viewerCount, streamStats]);
 
+  // ============================================================
+  // GO LIVE - Start broadcast (with or without pre-stream)
+  // ============================================================
   const handleGoLive = async () => {
     if (!streamTitle.trim()) {
       toast.error('Please enter a stream title');
@@ -147,28 +160,43 @@ export const ModernLiveStudio: React.FC = () => {
       setSessionId(result.sessionId);
       peakViewersRef.current = 0;
       
-      // Use pre-stream if active, otherwise use camera
-      const initialStream = activePreStream || stream;
-      const initialMode = activePreStream ? "pre-stream" : "live";
-      
+      // Determine initial stream and mode
+      let initialStream = stream;
+      let initialMode: 'live' | 'pre-stream' = 'live';
+
+      if (activeOverlayStream) {
+        initialStream = activeOverlayStream;
+        initialMode = 'pre-stream';
+        setOverlaySource('media');
+      }
+
       startBroadcast(initialStream, {
         sessionId: result.sessionId,
         title: streamTitle,
         description: streamDescription,
+        initialMode,
       });
       
       setIsLive(true);
       setShowPreStream(false);
-      toast.success(`🔴 Session started in ${initialMode} mode`);
+      toast.success(initialMode === 'pre-stream' 
+        ? '🎬 Stream started in Pre-Stream mode' 
+        : '🔴 You are now LIVE!');
     } catch (err) {
       console.error('Go live failed:', err);
       toast.error('Failed to go live. Check your connection and try again.');
     }
   };
 
+  // ============================================================
+  // STOP LIVE - End broadcast
+  // ============================================================
   const handleStopLive = async () => {
     stopBroadcast();
     setIsLive(false);
+    setIsOverlayActive(false);
+    setOverlaySource(null);
+    setActiveOverlayStream(null);
     if (sessionId !== null) {
       try {
         await endLiveMutation({ sessionId });
@@ -180,10 +208,100 @@ export const ModernLiveStudio: React.FC = () => {
     toast.success('Stream ended');
   };
 
+  // ============================================================
+  // SWITCH TO PRE-STREAM — Play media for viewers while live
+  // ============================================================
+  const handleShowMediaToViewers = async () => {
+    if (!preStreamRef.current) {
+      toast.error('Pre-stream player not ready');
+      return;
+    }
+
+    const mediaStream = await preStreamRef.current.captureStream();
+    if (!mediaStream) {
+      toast.error('Failed to capture media stream. Make sure a media item is playing.');
+      return;
+    }
+
+    setActiveOverlayStream(mediaStream);
+    setIsOverlayActive(true);
+    setOverlaySource('media');
+
+    try {
+      if (isLive) {
+        await replaceStream(mediaStream);
+        toast.success('🎬 Now broadcasting media to viewers');
+      }
+    } catch (err) {
+      console.error('Failed to switch to media overlay:', err);
+      toast.error('Failed to switch broadcast to media');
+    }
+  };
+
+  // ============================================================
+  // SWITCH BACK TO CAMERA — Return to live camera feed
+  // ============================================================
+  const handleShowCameraToViewers = async () => {
+    if (!stream) {
+      toast.error('Camera stream not available');
+      return;
+    }
+
+    setActiveOverlayStream(null);
+    setIsOverlayActive(false);
+    setOverlaySource('camera');
+
+    try {
+      if (isLive) {
+        await restoreOriginalStream();
+        toast.success('📷 Back to live camera');
+      }
+    } catch (err) {
+      console.error('Failed to restore camera:', err);
+      toast.error('Failed to switch back to camera');
+    }
+  };
+
+  // ============================================================
+  // GO LIVE FROM PRE-STREAM — Transition from pre-stream to live
+  // ============================================================
+  const handleGoLiveFromPreStream = () => {
+    goLiveFromPreStream();
+    setIsOverlayActive(false);
+    setOverlaySource('camera');
+    setActiveOverlayStream(null);
+    toast.success('🔴 Now showing live camera to viewers!');
+  };
+
+  // ============================================================
+  // STOP PRE-STREAM OVERLAY — Cancel overlay and return to camera
+  // ============================================================
+  const handleStopOverlay = async () => {
+    if (preStreamRef.current) {
+      preStreamRef.current.stopCapture();
+    }
+    setActiveOverlayStream(null);
+    setIsOverlayActive(false);
+    setOverlaySource(null);
+
+    if (isLive && stream) {
+      try {
+        await restoreOriginalStream();
+        toast.success('Overlay removed — back to live camera');
+      } catch (err) {
+        console.error('Failed to stop overlay:', err);
+        toast.error('Failed to remove overlay');
+      }
+    }
+  };
+
+  // ============================================================
+  // CAMERA CONTROLS
+  // ============================================================
   const handleSwitchCamera = async (deviceId: string) => {
     try {
       const newStream = await camera.switchToDevice(deviceId);
-      if (isLive) updateLocalStream(newStream);
+      if (isLive && !isOverlayActive) updateLocalStream(newStream);
       toast.success('Camera switched');
     } catch (err) {
       console.error('Camera switch failed:', err);
@@ -192,10 +310,10 @@ export const ModernLiveStudio: React.FC = () => {
   };
 
   const handleFlipCamera = async () => {
-    const switchingTo = camera.facingMode === 'user' ? 'back' : 'front';
+    const switchingTo = camera.facingMode === 'user' ? 'environment' : 'user';
     try {
       const newStream = await camera.flipFacing();
-      if (isLive) updateLocalStream(newStream);
+      if (isLive && !isOverlayActive) updateLocalStream(newStream);
       toast.success(`Switched to ${switchingTo} camera`);
     } catch (err) {
       console.error('Camera flip failed:', err);
@@ -240,6 +358,9 @@ export const ModernLiveStudio: React.FC = () => {
     }
   };
 
+  // ============================================================
+  // PLATFORM MANAGEMENT
+  // ============================================================
   const handleConnectPlatform = async () => {
     if (!platformForm || !platformForm.accountName.trim() || !platformForm.accessToken.trim()) {
       toast.error('Enter an account name and access token / stream key');
@@ -267,6 +388,9 @@ export const ModernLiveStudio: React.FC = () => {
     }
   };
 
+  // ============================================================
+  // CHAT
+  // ============================================================
   const handleSendChat = () => {
     if (!newMessage.trim()) return;
     sendChatMessage(newMessage, 'Admin');
@@ -278,33 +402,22 @@ export const ModernLiveStudio: React.FC = () => {
     toast.success('Message removed');
   };
 
-  const handlePreStreamMediaActivate = async (mediaStream: MediaStream | null) => {
-    setActivePreStream(mediaStream);
-    try {
-      if (mediaStream) {
-        // Update local preview
-        if (videoRef.current) {
-          videoRef.current.srcObject = mediaStream;
-        }
-        // If we are already live, broadcast this media stream to viewers
-        if (isLive) {
-          await replaceStream(mediaStream);
-          toast.info('Broadcasting pre-stream media to viewers');
-        }
-      } else if (stream) {
-        // Update local preview back to camera
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-        }
-        // If we are already live, restore the camera stream for viewers
-        if (isLive) {
-          await restoreOriginalStream(stream);
-          toast.info('Switched back to live camera');
-        }
+  // ============================================================
+  // PRE-STREAM MEDIA HANDLER
+  // ============================================================
+  const handlePreStreamMediaActivate = (mediaStream: MediaStream | null) => {
+    if (mediaStream) {
+      setActiveOverlayStream(mediaStream);
+      // Update local preview
+      if (videoRef.current) {
+        videoRef.current.srcObject = mediaStream;
       }
-    } catch (err) {
-      console.error('Failed to switch stream:', err);
-      toast.error('Failed to switch broadcast stream');
+    } else if (stream) {
+      setActiveOverlayStream(null);
+      // Update local preview back to camera
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
     }
   };
 
@@ -314,6 +427,9 @@ export const ModernLiveStudio: React.FC = () => {
       [section]: !prev[section],
     }));
   };
+
+  // Determine what to show in the preview
+  const showMediaPreview = isOverlayActive || (activeOverlayStream && !isLive);
 
   return (
     <div className="space-y-6">
@@ -338,18 +454,32 @@ export const ModernLiveStudio: React.FC = () => {
               <motion.div
                 animate={{ scale: [1, 1.1, 1] }}
                 transition={{ duration: 1, repeat: Infinity }}
-                className="absolute top-4 right-4 bg-red-600 text-white px-4 py-2 rounded-full flex items-center gap-2 font-bold z-10"
+                className="absolute top-4 right-4 flex items-center gap-3 z-10"
               >
-                <div className="w-3 h-3 bg-white rounded-full animate-pulse" />
-                LIVE
+                <div className="bg-red-600 text-white px-4 py-2 rounded-full flex items-center gap-2 font-bold">
+                  <div className="w-3 h-3 bg-white rounded-full animate-pulse" />
+                  LIVE
+                </div>
+                {isOverlayActive && (
+                  <div className="bg-amber-600 text-white px-4 py-2 rounded-full flex items-center gap-2 font-bold text-sm">
+                    <MonitorPlay className="w-4 h-4" />
+                    SHOWING MEDIA
+                  </div>
+                )}
+                {broadcastMode === 'pre-stream' && !isOverlayActive && (
+                  <div className="bg-blue-600 text-white px-4 py-2 rounded-full flex items-center gap-2 font-bold text-sm">
+                    <Film className="w-4 h-4" />
+                    PRE-STREAM
+                  </div>
+                )}
               </motion.div>
             )}
 
-            {/* Pre-stream media indicator */}
-            {showPreStream && !isLive && (
+            {/* Pre-stream media indicator (not live) */}
+            {showPreStream && !isLive && showMediaPreview && (
               <div className="absolute top-4 right-4 bg-blue-600 text-white px-4 py-2 rounded-full flex items-center gap-2 font-bold z-10">
                 <Film className="w-4 h-4" />
-                PRE-STREAM
+                PRE-STREAM PREVIEW
               </div>
             )}
 
@@ -381,7 +511,100 @@ export const ModernLiveStudio: React.FC = () => {
         </Card>
       </motion.div>
 
-      {/* Single-Page Control Layout */}
+      {/* ============================================================
+          LIVE CONTROL BAR — Quick switch between camera and media
+          ============================================================ */}
+      {isLive && (
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="flex gap-3 p-3 rounded-lg border border-border bg-card/50"
+        >
+          <p className="text-xs font-semibold text-muted-foreground flex items-center gap-2 self-center">
+            <Layers className="w-4 h-4 text-ember" />
+            Quick Switch:
+          </p>
+          <Button
+            size="sm"
+            variant={isOverlayActive ? 'outline' : 'default'}
+            onClick={handleShowCameraToViewers}
+            className={`gap-2 ${!isOverlayActive ? 'bg-ember hover:bg-ember/90 text-ember-foreground' : ''}`}
+          >
+            <Camera className="w-4 h-4" />
+            Show Camera
+          </Button>
+          <Button
+            size="sm"
+            variant={isOverlayActive ? 'default' : 'outline'}
+            onClick={handleShowMediaToViewers}
+            className={`gap-2 ${isOverlayActive ? 'bg-amber-600 hover:bg-amber-700 text-white' : ''}`}
+          >
+            <MonitorPlay className="w-4 h-4" />
+            Show Media to Viewers
+          </Button>
+          <Button
+            size="sm"
+            variant="destructive"
+            onClick={handleStopOverlay}
+            disabled={!isOverlayActive}
+            className="gap-2"
+          >
+            <X className="w-4 h-4" />
+            Stop Overlay
+          </Button>
+          {broadcastMode === 'pre-stream' && !isOverlayActive && (
+            <Button
+              size="sm"
+              className="gap-2 bg-red-600 hover:bg-red-700 text-white ml-auto"
+              onClick={handleGoLiveFromPreStream}
+            >
+              <Radio className="w-4 h-4" />
+              Go Live Now
+            </Button>
+          )}
+        </motion.div>
+      )}
+
+      {/* ============================================================
+          NOT-LIVE PRE-STREAM CONTROL
+          ============================================================ */}
+      {!isLive && (
+        <div className="flex gap-3 p-3 rounded-lg border border-border bg-card/50">
+          <p className="text-xs font-semibold text-muted-foreground flex items-center gap-2 self-center">
+            <Film className="w-4 h-4 text-ember" />
+            Pre-Stream:
+          </p>
+          {showMediaPreview && activeOverlayStream ? (
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleStopOverlay}
+                className="gap-2"
+              >
+                <Camera className="w-4 h-4" />
+                Switch to Camera Preview
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => { setShowPreStream(true); setExpandedSections(prev => ({ ...prev, preStream: true })); }}
+                className="gap-2"
+              >
+                <Film className="w-4 h-4" />
+                Preview Media Before Going Live
+              </Button>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ============================================================
+          COLLAPSIBLE CONTROL PANELS
+          ============================================================ */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* ===== CAMERAS SECTION ===== */}
         <motion.div
@@ -423,7 +646,7 @@ export const ModernLiveStudio: React.FC = () => {
                   <AnimatePresence>
                     {camera.isScanning && (
                       <motion.div
-                        initial={{ opacity: 0, height: 0 }}
+                        initial={{ opacity: 0 }}
                         animate={{ opacity: 1, height: "auto" }}
                         exit={{ opacity: 0, height: 0 }}
                         className="overflow-hidden"
@@ -510,7 +733,7 @@ export const ModernLiveStudio: React.FC = () => {
           </Card>
         </motion.div>
 
-        {/* ===== PRE-STREAM SECTION ===== */}
+        {/* ===== PRE-STREAM / MEDIA OVERLAY SECTION ===== */}
         <motion.div
           layout
           initial={{ opacity: 0, y: 20 }}
@@ -524,7 +747,7 @@ export const ModernLiveStudio: React.FC = () => {
             >
               <h4 className="font-bold text-foreground flex items-center gap-2">
                 <Film className="w-4 h-4 text-ember" />
-                Pre-Stream Media
+                Pre-Stream & Media Overlay
               </h4>
               {expandedSections.preStream ? (
                 <ChevronUp className="w-4 h-4" />
@@ -541,23 +764,15 @@ export const ModernLiveStudio: React.FC = () => {
                   exit={{ opacity: 0, height: 0 }}
                   className="space-y-4 overflow-hidden"
                 >
-                  <p className="text-xs text-muted-foreground">
-                    Play videos, images, or music while waiting to go live. Upload files or add URLs.
-                  </p>
-                  <Button
-                    variant={showPreStream ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setShowPreStream(!showPreStream)}
-                    className={showPreStream ? "bg-ember text-ember-foreground w-full" : "w-full"}
-                  >
-                    {showPreStream ? (
-                      <><Pause className="w-3 h-3 mr-1" /> Hide Preview</>
-                    ) : (
-                      <><Play className="w-3 h-3 mr-1" /> Show in Preview</>
-                    )}
-                  </Button>
+                  <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
+                    <p className="text-xs text-amber-300 font-medium">
+                      Play videos, images, or music for viewers. You can start with pre-stream before going live,
+                      or switch to media overlay while live — viewers will see the media instead of the camera.
+                    </p>
+                  </div>
 
                   <PreStreamMediaPlayer
+                    ref={preStreamRef}
                     onMediaActivate={handlePreStreamMediaActivate}
                     isLive={isLive}
                   />
@@ -885,7 +1100,9 @@ export const ModernLiveStudio: React.FC = () => {
         </motion.div>
       </div>
 
-      {/* Action Buttons */}
+      {/* ============================================================
+          ACTION BUTTONS — Sticky bottom bar
+          ============================================================ */}
       <div className="flex gap-4 sticky bottom-0 bg-background/95 backdrop-blur p-4 rounded-lg border border-border">
         {!isLive ? (
           <>
@@ -895,7 +1112,7 @@ export const ModernLiveStudio: React.FC = () => {
               className="flex-1 bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 gap-2 py-6 text-lg disabled:opacity-50"
             >
               <Radio className="w-5 h-5" />
-              {goLivePending ? 'GOING LIVE...' : 'GO LIVE'}
+              {goLivePending ? 'GOING LIVE...' : activeOverlayStream ? 'GO LIVE (with Pre-Stream)' : 'GO LIVE'}
             </Button>
             <Button variant="outline" className="gap-2" onClick={handleTestConnection}>
               <Zap className="w-4 h-4" />

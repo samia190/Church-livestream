@@ -1,6 +1,6 @@
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Radio, Users, Clock, Share2, Heart, MessageCircle, Play, Volume2, VolumeX, Send, Info } from 'lucide-react';
+import { Radio, Users, Clock, Share2, Heart, MessageCircle, Play, Volume2, VolumeX, Send, Info, Film, MonitorPlay, AlertCircle } from 'lucide-react';
 import { Link } from 'wouter';
 import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -31,67 +31,6 @@ export default function WatchLive() {
     }
   }, [remoteStream]);
 
-  const containerVariants = {
-    hidden: { opacity: 0 },
-    visible: {
-      opacity: 1,
-      transition: { staggerChildren: 0.1, delayChildren: 0.2 },
-    },
-  };
-
-  const itemVariants = {
-    hidden: { opacity: 0, y: 20 },
-    visible: { opacity: 1, y: 0, transition: { duration: 0.5 } },
-  };
-
-  const upcomingServices = [
-    {
-      id: 1,
-      title: 'Sunday Morning Worship',
-      date: 'Sunday, June 23, 2026',
-      time: '9:00 AM - 11:00 AM',
-      description: 'Join us for our main worship service with praise, worship, and preaching.',
-      thumbnail: 'https://d2xsxph8kpxj0f.cloudfront.net/310519663779111251/22XNoSU8LuRfCuqftFgkdg/prayer-service-congregation-Q84LZ6m6F67AnXSBo3UuYP.webp',
-    },
-    {
-      id: 2,
-      title: 'Midweek Prayer Meeting',
-      date: 'Wednesday, June 26, 2026',
-      time: '7:00 PM - 8:30 PM',
-      description: 'Evening prayer and intercession service for the church and community.',
-      thumbnail: 'https://d2xsxph8kpxj0f.cloudfront.net/310519663779111251/22XNoSU8LuRfCuqftFgkdg/prayer-service-congregation-Q84LZ6m6F67AnXSBo3UuYP.webp',
-    },
-    {
-      id: 3,
-      title: 'Youth Fellowship',
-      date: 'Friday, June 28, 2026',
-      time: '6:00 PM - 8:00 PM',
-      description: 'Special youth gathering with worship, teaching, and fellowship.',
-      thumbnail: 'https://d2xsxph8kpxj0f.cloudfront.net/310519663779111251/22XNoSU8LuRfCuqftFgkdg/prayer-service-congregation-Q84LZ6m6F67AnXSBo3UuYP.webp',
-    },
-  ];
-
-  const recentSermons = [
-    {
-      id: 1,
-      title: 'The Power of Faith',
-      speaker: 'Bishop Samuel Kipchoge',
-      date: 'June 16, 2026',
-      duration: '45 min',
-      thumbnail: 'https://d2xsxph8kpxj0f.cloudfront.net/310519663779111251/22XNoSU8LuRfCuqftFgkdg/sermons-media-broadcast-Q84LZ6m6F67AnXSBo3UuYP.webp',
-      views: 2340,
-    },
-    {
-      id: 2,
-      title: 'Building Strong Families',
-      speaker: 'Pastor Grace Mwangi',
-      date: 'June 9, 2026',
-      duration: '38 min',
-      thumbnail: 'https://d2xsxph8kpxj0f.cloudfront.net/310519663779111251/22XNoSU8LuRfCuqftFgkdg/sermons-media-broadcast-Q84LZ6m6F67AnXSBo3UuYP.webp',
-      views: 1890,
-    },
-  ];
-
   const isLive = meta.isLive;
   const broadcastMode = meta.broadcastMode;
   const streamTitle = meta.title || 'Sunday Morning Worship';
@@ -106,6 +45,52 @@ export default function WatchLive() {
     }
   };
 
+  // Determine what badge to show
+  const getModeBadge = () => {
+    switch (broadcastMode) {
+      case 'live':
+        return (
+          <motion.div
+            key="live-badge"
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -20 }}
+            className="flex items-center gap-2 bg-red-600 px-4 py-2 rounded-full shadow-lg"
+          >
+            <div className="w-2 h-2 bg-white rounded-full animate-pulse" />
+            <span className="text-white font-bold text-xs tracking-wider uppercase">Live Now</span>
+          </motion.div>
+        );
+      case 'pre-stream':
+        return (
+          <motion.div
+            key="prestream-badge"
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -20 }}
+            className="flex items-center gap-2 bg-amber-600 px-4 py-2 rounded-full shadow-lg"
+          >
+            <MonitorPlay className="w-3 h-3 text-white" />
+            <span className="text-white font-bold text-xs tracking-wider uppercase">Showing Media</span>
+          </motion.div>
+        );
+      case 'offline':
+      default:
+        return (
+          <motion.div
+            key="offline-badge"
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -20 }}
+            className="flex items-center gap-2 bg-gray-600 px-4 py-2 rounded-full shadow-lg"
+          >
+            <div className="w-2 h-2 bg-white rounded-full" />
+            <span className="text-white font-bold text-xs tracking-wider uppercase">Offline</span>
+          </motion.div>
+        );
+    }
+  };
+
   return (
     <div className="min-h-screen text-foreground bg-void">
       <Navigation />
@@ -114,13 +99,16 @@ export default function WatchLive() {
       <motion.section
         initial="hidden"
         animate="visible"
-        variants={containerVariants}
+        variants={{
+          hidden: { opacity: 0 },
+          visible: { opacity: 1, transition: { staggerChildren: 0.1, delayChildren: 0.2 } },
+        }}
         className="max-w-7xl mx-auto px-4 pt-24 pb-12"
       >
-        <motion.div variants={itemVariants} className="mb-8">
+        <motion.div variants={{ hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0, transition: { duration: 0.5 } } }} className="mb-8">
           <div className="relative rounded-2xl overflow-hidden bg-black aspect-video flex items-center justify-center border border-primary/20 shadow-2xl group">
-            {/* Live Stream Video Player */}
-            {isLive && remoteStream ? (
+            {/* Stream Video Player */}
+            {(isLive || broadcastMode === 'pre-stream') && remoteStream ? (
               <video
                 ref={videoRef}
                 autoPlay
@@ -132,18 +120,18 @@ export default function WatchLive() {
               <div className="absolute inset-0 bg-gradient-to-br from-primary/10 via-void to-void flex flex-col items-center justify-center orbit-grid">
                 <Play className="w-24 h-24 text-primary/60 mb-4 animate-pulse" />
                 <p className="text-foreground text-xl font-semibold mb-2">
-                  {isLive ? 'Connecting to stream...' : 'No Live Stream Right Now'}
+                  {broadcastMode === 'pre-stream' ? 'Connecting to pre-stream...' : 'No Live Stream Right Now'}
                 </p>
-                <p className="text-muted-foreground">
-                  {isLive
-                    ? 'Setting up your connection to the broadcast'
+                <p className="text-muted-foreground text-center px-4">
+                  {broadcastMode === 'pre-stream'
+                    ? 'Media is being prepared — you\'ll see it shortly'
                     : 'Check back during a scheduled service, or watch a recent sermon below'}
                 </p>
               </div>
             )}
 
             {/* Professional Overlays */}
-            {isLive && (
+            {(isLive || broadcastMode === 'pre-stream') && (
               <>
                 {/* Church Logo at Top Left */}
                 <div className="absolute top-6 left-6 z-20 flex items-center gap-3">
@@ -159,29 +147,7 @@ export default function WatchLive() {
                 {/* Mode Indicator at Top Right */}
                 <div className="absolute top-6 right-6 z-20 flex flex-col items-end gap-2">
                   <AnimatePresence mode="wait">
-                    {broadcastMode === 'live' ? (
-                      <motion.div
-                        key="live-badge"
-                        initial={{ opacity: 0, x: 20 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        exit={{ opacity: 0, x: -20 }}
-                        className="flex items-center gap-2 bg-red-600 px-4 py-2 rounded-full shadow-lg"
-                      >
-                        <div className="w-2 h-2 bg-white rounded-full animate-pulse" />
-                        <span className="text-white font-bold text-xs tracking-wider uppercase">Live Now</span>
-                      </motion.div>
-                    ) : (
-                      <motion.div
-                        key="prestream-badge"
-                        initial={{ opacity: 0, x: 20 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        exit={{ opacity: 0, x: -20 }}
-                        className="flex items-center gap-2 bg-ember px-4 py-2 rounded-full shadow-lg"
-                      >
-                        <Clock className="w-3 h-3 text-white" />
-                        <span className="text-white font-bold text-xs tracking-wider uppercase">Pre-Stream</span>
-                      </motion.div>
-                    )}
+                    {getModeBadge()}
                   </AnimatePresence>
                   
                   <div className="bg-black/40 backdrop-blur-md px-3 py-1 rounded-md border border-white/10 flex items-center gap-2">
@@ -229,7 +195,7 @@ export default function WatchLive() {
         </motion.div>
 
         {/* Stream Info & Chat */}
-        <motion.div variants={itemVariants} className="grid lg:grid-cols-3 gap-8 mb-12">
+        <motion.div variants={{ hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0, transition: { duration: 0.5 } } }} className="grid lg:grid-cols-3 gap-8 mb-12">
           <div className="lg:col-span-2">
             <div className="glass-panel p-8 mb-8 relative overflow-hidden">
               <div className="absolute top-0 right-0 w-32 h-32 bg-primary/5 rounded-full -mr-16 -mt-16 blur-3xl" />
@@ -258,8 +224,8 @@ export default function WatchLive() {
             <div className="lg:hidden grid grid-cols-2 gap-4 mb-8">
                <div className="glass-panel p-4 flex flex-col items-center justify-center text-center">
                  <p className="text-xs text-muted-foreground mb-1 font-mono uppercase tracking-wider">Status</p>
-                 <p className={`text-xl font-black ${isLive ? 'text-signal' : 'text-muted-foreground'}`}>
-                   {isLive ? broadcastMode.toUpperCase() : 'OFFLINE'}
+                 <p className={`text-xl font-black ${isLive ? 'text-signal' : broadcastMode === 'pre-stream' ? 'text-amber-500' : 'text-muted-foreground'}`}>
+                   {broadcastMode === 'pre-stream' ? 'MEDIA' : broadcastMode.toUpperCase()}
                  </p>
                </div>
                <div className="glass-panel p-4 flex flex-col items-center justify-center text-center">
@@ -336,15 +302,18 @@ export default function WatchLive() {
               <div className="space-y-4">
                 <div className="flex justify-between items-center p-3 bg-primary/5 rounded-lg border border-primary/10">
                   <span className="text-xs text-muted-foreground font-mono uppercase tracking-wider">Status</span>
-                  <span className={`text-sm font-black ${isLive ? 'text-signal' : 'text-muted-foreground'}`}>
-                    {isLive ? broadcastMode.toUpperCase() : 'OFFLINE'}
+                  <span className={`text-sm font-black ${
+                    broadcastMode === 'live' ? 'text-signal' : 
+                    broadcastMode === 'pre-stream' ? 'text-amber-500' : 'text-muted-foreground'
+                  }`}>
+                    {broadcastMode === 'pre-stream' ? 'MEDIA' : broadcastMode.toUpperCase()}
                   </span>
                 </div>
                 <div className="flex justify-between items-center p-3 bg-primary/5 rounded-lg border border-primary/10">
                   <span className="text-xs text-muted-foreground font-mono uppercase tracking-wider">Viewers</span>
                   <span className="text-sm font-black text-ember">{meta.viewers.toLocaleString()}</span>
                 </div>
-                {isLive && meta.startTime > 0 && (
+                {(isLive || broadcastMode === 'pre-stream') && meta.startTime > 0 && (
                    <div className="flex justify-between items-center p-3 bg-primary/5 rounded-lg border border-primary/10">
                     <span className="text-xs text-muted-foreground font-mono uppercase tracking-wider">Uptime</span>
                     <span className="text-sm font-black text-primary font-mono">
@@ -358,14 +327,41 @@ export default function WatchLive() {
         </motion.div>
 
         {/* Upcoming Services */}
-        <motion.div variants={itemVariants} className="mb-12">
+        <motion.div variants={{ hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0, transition: { duration: 0.5 } } }} className="mb-12">
           <p className="label-eyebrow mb-2">Save the Date</p>
           <h3 className="text-2xl font-bold mb-6">Upcoming Services</h3>
           <div className="grid md:grid-cols-3 gap-6">
-            {upcomingServices.map((service) => (
+            {[
+              {
+                id: 1,
+                title: 'Sunday Morning Worship',
+                date: 'Sunday, June 23, 2026',
+                time: '9:00 AM - 11:00 AM',
+                description: 'Join us for our main worship service with praise, worship, and preaching.',
+                thumbnail: 'https://d2xsxph8kpxj0f.cloudfront.net/310519663779111251/22XNoSU8LuRfCuqftFgkdg/prayer-service-congregation-Q84LZ6m6F67AnXSBo3UuYP.webp',
+              },
+              {
+                id: 2,
+                title: 'Midweek Prayer Meeting',
+                date: 'Wednesday, June 26, 2026',
+                time: '7:00 PM - 8:30 PM',
+                description: 'Evening prayer and intercession service for the church and community.',
+                thumbnail: 'https://d2xsxph8kpxj0f.cloudfront.net/310519663779111251/22XNoSU8LuRfCuqftFgkdg/prayer-service-congregation-Q84LZ6m6F67AnXSBo3UuYP.webp',
+              },
+              {
+                id: 3,
+                title: 'Youth Fellowship',
+                date: 'Friday, June 28, 2026',
+                time: '6:00 PM - 8:00 PM',
+                description: 'Special youth gathering with worship, teaching, and fellowship.',
+                thumbnail: 'https://d2xsxph8kpxj0f.cloudfront.net/310519663779111251/22XNoSU8LuRfCuqftFgkdg/prayer-service-congregation-Q84LZ6m6F67AnXSBo3UuYP.webp',
+              },
+            ].map((service) => (
               <motion.div
                 key={service.id}
                 className="tilt-card glass-panel overflow-hidden cursor-pointer group"
+                whileHover={{ scale: 1.02 }}
+                transition={{ duration: 0.2 }}
               >
                 <div className="aspect-video relative overflow-hidden">
                   <img src={service.thumbnail} alt={service.title} loading="lazy" className="w-full h-full object-cover opacity-60 group-hover:scale-110 transition-transform duration-500" />
