@@ -2,7 +2,7 @@ import { useRef, useState, useCallback, useEffect, forwardRef, useImperativeHand
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Play, Pause, SkipForward, SkipBack, Upload, Link as LinkIcon,
-  Image, Music, Film, Volume2, VolumeX, Maximize2, X, Repeat,
+  Image as ImageIcon, Music, Film, Volume2, VolumeX, Maximize2, X, Repeat,
   AlertCircle, Monitor, Radio
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -58,7 +58,7 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
     const audioContextRef = useRef<AudioContext | null>(null);
     const captureStreamRef = useRef<MediaStream | null>(null);
     const captureLoopRef = useRef<number | null>(null);
-    const imageDrawLoopRef = useRef<number | null>(null);
+    const preloadedImageRef = useRef<HTMLImageElement | null>(null);
 
     const current = currentIndex >= 0 ? mediaList[currentIndex] : null;
 
@@ -88,7 +88,7 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
 
     /**
      * Capture the current media as a MediaStream.
-     * Handles video, image, and audio types with proper composition.
+     * Handles video, image, and audio types with optimized performance.
      */
     const captureMediaStream = async (): Promise<MediaStream | null> => {
       if (!current || !isPlaying) {
@@ -103,12 +103,22 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
         let videoTrack: MediaStreamTrack | null = null;
         let audioTrack: MediaStreamTrack | null = null;
 
-        // Capture video track (for video and image)
-        if (current.type === "video" || current.type === "image") {
+        // Optimized Video Capture
+        if (current.type === "video" && videoRef.current) {
+          // Use captureStream directly from video element if available (more efficient)
+          const videoElement = videoRef.current;
+          if ((videoElement as any).captureStream) {
+            const stream = (videoElement as any).captureStream();
+            videoTrack = stream.getVideoTracks()[0];
+          } else {
+            // Fallback to optimized canvas capture
+            videoTrack = await captureVideoTrack();
+          }
+        } else if (current.type === "image") {
           videoTrack = await captureVideoTrack();
         }
 
-        // Capture audio track (for video and audio)
+        // Optimized Audio Capture
         if ((current.type === "video" || current.type === "audio") && audioRef.current) {
           audioTrack = await captureAudioTrack(audioRef.current);
         }
@@ -135,6 +145,7 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
 
     /**
      * Capture video from canvas or video element.
+     * Optimized to reduce CPU load.
      */
     const captureVideoTrack = async (): Promise<MediaStreamTrack | null> => {
       if (!canvasRef.current) {
@@ -142,76 +153,65 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
       }
 
       const canvas = canvasRef.current;
-      const ctx = canvas.getContext("2d");
+      const ctx = canvas.getContext("2d", { alpha: false }); // Disable alpha for better performance
       if (!ctx) {
         throw new Error("Could not get canvas context");
       }
 
-      // Set canvas size to 1920x1080 for professional quality
-      canvas.width = 1920;
-      canvas.height = 1080;
+      // Use 1280x720 for a balance between quality and performance
+      canvas.width = 1280;
+      canvas.height = 720;
 
-      // Draw initial frame
       if (current?.type === "video" && videoRef.current) {
-        ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+        const video = videoRef.current;
+        const updateFrame = () => {
+          if (video && isPlaying) {
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            captureLoopRef.current = requestAnimationFrame(updateFrame);
+          }
+        };
+        updateFrame();
       } else if (current?.type === "image") {
-            const img = document.createElement("img");
-            img.crossOrigin = "anonymous";
-            await new Promise<void>((resolve, reject) => {
-              img.onload = () => {
-                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                resolve();
-              };
-              img.onerror = () => reject(new Error("Failed to load image"));
-              img.src = current.url;
-            });
+        // Pre-load image and draw once
+        if (!preloadedImageRef.current || preloadedImageRef.current.src !== current.url) {
+          const img = document.createElement("img");
+          img.crossOrigin = "anonymous";
+          await new Promise<void>((resolve, reject) => {
+            img.onload = () => {
+              preloadedImageRef.current = img;
+              resolve();
+            };
+            img.onerror = () => reject(new Error("Failed to load image"));
+            img.src = current.url;
+          });
+        }
+
+        const img = preloadedImageRef.current!;
+        const redraw = () => {
+          if (isPlaying) {
+            ctx.fillStyle = "#000000";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            const scale = Math.min(canvas.width / img.width, canvas.height / img.height);
+            const w = img.width * scale;
+            const h = img.height * scale;
+            const x = (canvas.width - w) / 2;
+            const y = (canvas.height - h) / 2;
+            ctx.drawImage(img, x, y, w, h);
+            // Only redraw at 1fps for static images to save CPU
+            captureLoopRef.current = window.setTimeout(redraw, 1000) as any;
+          }
+        };
+        redraw();
       }
 
-      // Get canvas stream at 30fps
-      const canvasStream = canvas.captureStream(30);
+      const canvasStream = canvas.captureStream(isPlaying && current?.type === "video" ? 30 : 5);
       const videoTrack = canvasStream.getVideoTracks()[0];
 
       if (!videoTrack) {
         throw new Error("Failed to capture video track from canvas");
       }
 
-      // For video, continuously update the canvas
-      if (current?.type === "video" && videoRef.current) {
-        const updateFrame = () => {
-          if (videoRef.current && isPlaying) {
-            ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-            captureLoopRef.current = requestAnimationFrame(updateFrame);
-          }
-        };
-        captureLoopRef.current = requestAnimationFrame(updateFrame);
-      } else if (current?.type === "image") {
-        // Keep redrawing the image to maintain the stream
-        const redrawImage = () => {
-          if (isPlaying) {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            // Add a subtle animated overlay for images
-            ctx.fillStyle = "#0a0a0a";
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            const img = document.createElement("img");
-            img.crossOrigin = "anonymous";
-            img.onload = () => {
-              // Calculate dimensions to fit 1920x1080 while maintaining aspect ratio
-              const scale = Math.min(canvas.width / img.width, canvas.height / img.height);
-              const w = img.width * scale;
-              const h = img.height * scale;
-              const x = (canvas.width - w) / 2;
-              const y = (canvas.height - h) / 2;
-              ctx.drawImage(img, x, y, w, h);
-            };
-            img.src = current.url;
-            imageDrawLoopRef.current = requestAnimationFrame(redrawImage);
-          }
-        };
-        // Draw once, then keep refreshing
-        redrawImage();
-      }
-
-      return videoTrack as MediaStreamTrack;
+      return videoTrack;
     };
 
     /**
@@ -224,29 +224,19 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
         }
 
         const audioContext = audioContextRef.current;
-
         if (audioContext.state === "suspended") {
           await audioContext.resume();
         }
 
-        // Create source from audio element
-        const source = audioContext.createMediaElementSource(audioElement);
+        // We use a singleton source node to avoid "MediaElementAudioSourceNode has already been created" error
+        const source = (audioElement as any)._sourceNode || audioContext.createMediaElementSource(audioElement);
+        (audioElement as any)._sourceNode = source;
 
-        // Create destination to capture audio
         const destination = audioContext.createMediaStreamDestination();
-
-        // Connect source to destination (for broadcast)
         source.connect(destination);
-        // Also connect to speakers so the host can hear it
         source.connect(audioContext.destination);
 
-        const audioTrack = destination.stream.getAudioTracks()[0];
-
-        if (!audioTrack) {
-          throw new Error("Failed to capture audio track");
-        }
-
-        return audioTrack as MediaStreamTrack;
+        return destination.stream.getAudioTracks()[0];
       } catch (error) {
         console.error("[PreStreamMediaPlayer] Audio capture error:", error);
         return null;
@@ -259,21 +249,13 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
     const stopCapture = useCallback(() => {
       if (captureLoopRef.current) {
         cancelAnimationFrame(captureLoopRef.current);
+        clearTimeout(captureLoopRef.current);
         captureLoopRef.current = null;
-      }
-      if (imageDrawLoopRef.current) {
-        cancelAnimationFrame(imageDrawLoopRef.current);
-        imageDrawLoopRef.current = null;
       }
 
       if (captureStreamRef.current) {
         captureStreamRef.current.getTracks().forEach(track => track.stop());
         captureStreamRef.current = null;
-      }
-
-      if (audioContextRef.current && audioContextRef.current.state !== "closed") {
-        audioContextRef.current.close();
-        audioContextRef.current = null;
       }
 
       setIsBroadcasting(false);
@@ -287,14 +269,6 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
       return "video";
     };
 
-    const detectTypeFromUrl = (url: string): "video" | "image" | "audio" => {
-      const lower = url.toLowerCase();
-      if (lower.endsWith(".mp4") || lower.endsWith(".webm") || lower.endsWith(".mov") || lower.includes("youtube") || lower.includes("youtu.be")) return "video";
-      if (lower.endsWith(".mp3") || lower.endsWith(".wav") || lower.endsWith(".ogg") || lower.endsWith(".m4a")) return "audio";
-      if (lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".webp") || lower.endsWith(".gif") || lower.endsWith(".svg")) return "image";
-      return urlType;
-    };
-
     const handleFileUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = e.target.files;
       if (!files) return;
@@ -306,9 +280,7 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
         const label = file.name.replace(/\.[^/.]+$/, "");
 
         if (type === "video" || type === "audio") {
-          const el = type === "video"
-            ? document.createElement("video")
-            : document.createElement("audio");
+          const el = document.createElement(type) as HTMLVideoElement | HTMLAudioElement;
           el.src = url;
           await new Promise<void>(resolve => {
             el.addEventListener("loadedmetadata", () => {
@@ -335,10 +307,9 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
 
     const handleAddUrl = useCallback(() => {
       if (!urlInput.trim()) return;
-      const type = detectTypeFromUrl(urlInput.trim());
       setMediaList(prev => [...prev, {
         id: crypto.randomUUID(),
-        type,
+        type: urlType,
         url: urlInput.trim(),
         label: urlInput.trim().split("/").pop()?.split("?")[0] || "Remote Media",
       }]);
@@ -346,20 +317,7 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
       setUrlInput("");
       setShowUrlInput(false);
       toast.success("Media URL added");
-    }, [urlInput, currentIndex]);
-
-    const removeItem = (index: number) => {
-      if (index === currentIndex) {
-        stopPlayback();
-        setMediaList(prev => {
-          const next = prev.filter((_, i) => i !== index);
-          setCurrentIndex(next.length > 0 ? Math.min(index, next.length - 1) : -1);
-          return next;
-        });
-      } else {
-        setMediaList(prev => prev.filter((_, i) => i !== index));
-      }
-    };
+    }, [urlInput, urlType, currentIndex]);
 
     const startPlayback = useCallback(() => {
       if (!current) return;
@@ -394,237 +352,98 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
       if (imageTimerRef.current) { clearTimeout(imageTimerRef.current); imageTimerRef.current = null; }
       setCurrentTime(0);
       onMediaActivate(null);
-      stopCapture();
     }, [onMediaActivate]);
 
-    const togglePlay = () => {
-      if (isPlaying) {
-        if (videoRef.current) videoRef.current.pause();
-        if (audioRef.current) audioRef.current.pause();
-        if (imageTimerRef.current) { clearTimeout(imageTimerRef.current); imageTimerRef.current = null; }
-        setIsPlaying(false);
-        stopCapture();
-      } else {
-        startPlayback();
-      }
-    };
-
-    const handleNext = () => {
+    const handleNext = useCallback(() => {
       if (mediaList.length === 0) return;
-      const next = currentIndex + 1 >= mediaList.length ? 0 : currentIndex + 1;
-      setCurrentIndex(next);
-      stopPlayback();
-      setTimeout(() => {
-        setCurrentIndex(next);
-        setIsPlaying(true);
-      }, 50);
-    };
+      const nextIndex = (currentIndex + 1) % mediaList.length;
+      setCurrentIndex(nextIndex);
+    }, [currentIndex, mediaList.length]);
 
-    const handlePrev = () => {
+    const handlePrev = useCallback(() => {
       if (mediaList.length === 0) return;
-      const prev = currentIndex - 1 < 0 ? mediaList.length - 1 : currentIndex - 1;
-      setCurrentIndex(prev);
-      stopPlayback();
-      setTimeout(() => {
-        setCurrentIndex(prev);
-        setIsPlaying(true);
-      }, 50);
-    };
+      const prevIndex = (currentIndex - 1 + mediaList.length) % mediaList.length;
+      setCurrentIndex(prevIndex);
+    }, [currentIndex, mediaList.length]);
 
-    const handleVolumeChange = (v: number) => {
-      setVolume(v);
-      setMuted(v === 0);
-      if (videoRef.current) videoRef.current.volume = v / 100;
-      if (audioRef.current) audioRef.current.volume = v / 100;
-    };
-
-    const toggleMute = () => {
-      const newMuted = !muted;
-      setMuted(newMuted);
-      if (videoRef.current) videoRef.current.volume = newMuted ? 0 : volume / 100;
-      if (audioRef.current) audioRef.current.volume = newMuted ? 0 : volume / 100;
-    };
-
-    const toggleFullscreen = () => {
-      if (!videoRef.current) return;
-      if (document.fullscreenElement) {
-        document.exitFullscreen();
-        setIsFullscreen(false);
-      } else {
-        videoRef.current.requestFullscreen().then(() => setIsFullscreen(true));
-      }
-    };
-
-    const formatTime = (s: number) => {
-      if (!s || isNaN(s)) return "0:00";
-      const mins = Math.floor(s / 60);
-      const secs = Math.floor(s % 60);
+    const formatTime = (time: number) => {
+      if (isNaN(time)) return "0:00";
+      const mins = Math.floor(time / 60);
+      const secs = Math.floor(time % 60);
       return `${mins}:${secs.toString().padStart(2, "0")}`;
     };
 
     return (
-      <div className="space-y-4">
-        {/* Hidden canvas and audio elements for capture */}
-        <canvas ref={canvasRef} className="hidden" />
-
-        {/* Capture Error Alert */}
-        {captureError && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: "auto" }}
-            exit={{ opacity: 0, height: 0 }}
-            className="overflow-hidden"
-          >
-            <Card className="p-3 bg-red-500/10 border border-red-500/30 flex items-start gap-3">
-              <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
-              <div className="flex-1">
-                <p className="text-sm font-semibold text-red-600">Capture Error</p>
-                <p className="text-xs text-red-500/80">{captureError}</p>
-              </div>
-              <button onClick={() => setCaptureError(null)} className="text-red-500 hover:text-red-600">
-                <X className="w-4 h-4" />
-              </button>
-            </Card>
-          </motion.div>
-        )}
-
-        {/* Broadcasting Status */}
-        {isBroadcasting && (
-          <motion.div
-            initial={{ opacity: 0, y: -5 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="flex items-center gap-2 px-3 py-2 rounded-lg bg-green-500/10 border border-green-500/30"
-          >
-            <motion.div
-              animate={{ scale: [1, 1.3, 1] }}
-              transition={{ duration: 1, repeat: Infinity }}
-              className="w-2 h-2 bg-green-500 rounded-full"
-            />
-            <p className="text-xs font-semibold text-green-400">Broadcasting to viewers</p>
-          </motion.div>
-        )}
-
-        {/* Add Media Buttons */}
-        <div className="flex flex-col sm:flex-row gap-2">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="video/*,image/*,audio/*"
-            multiple
-            className="hidden"
-            onChange={handleFileUpload}
-          />
-          <Button
-            onClick={() => fileInputRef.current?.click()}
-            className="flex-1 gap-2 bg-gradient-to-r from-emerald-600 to-emerald-700 hover:from-emerald-700 hover:to-emerald-800"
-            disabled={isLive}
-          >
-            <Upload className="w-4 h-4" />
-            Upload Files
-          </Button>
-          <Button
-            variant="outline"
-            onClick={() => setShowUrlInput(!showUrlInput)}
-            className="flex-1 gap-2 border-primary/50"
-            disabled={isLive}
-          >
-            <LinkIcon className="w-4 h-4" />
-            Add from URL
-          </Button>
+      <Card className="bg-slate-900/40 border-slate-800 overflow-hidden flex flex-col h-full">
+        {/* Header */}
+        <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-900/60">
+          <div className="flex items-center gap-2">
+            <Monitor className="w-4 h-4 text-primary" />
+            <h3 className="font-bold text-white text-sm">Pre-Stream Studio</h3>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 border-slate-700 bg-slate-800/50 hover:bg-slate-800 text-xs gap-2"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <Upload className="w-3.5 h-3.5" />
+              Upload
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 border-slate-700 bg-slate-800/50 hover:bg-slate-800 text-xs gap-2"
+              onClick={() => setShowUrlInput(!showUrlInput)}
+            >
+              <LinkIcon className="w-3.5 h-3.5" />
+              URL
+            </Button>
+          </div>
         </div>
 
-        {/* URL Input */}
+        {/* URL Input Area */}
         <AnimatePresence>
           {showUrlInput && (
             <motion.div
               initial={{ height: 0, opacity: 0 }}
               animate={{ height: "auto", opacity: 1 }}
               exit={{ height: 0, opacity: 0 }}
-              className="overflow-hidden"
+              className="px-4 py-3 bg-slate-800/30 border-b border-slate-800 overflow-hidden"
             >
-              <Card className="p-4 glass-panel border-0 space-y-3">
-                <div className="flex gap-2">
-                  {(["video", "audio", "image"] as const).map(t => (
-                    <button
-                      key={t}
-                      onClick={() => setUrlType(t)}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold capitalize transition-colors ${
-                        urlType === t
-                          ? "bg-ember text-ember-foreground"
-                          : "bg-primary/10 text-muted-foreground hover:bg-primary/20"
-                      }`}
-                    >
-                      {t}
-                    </button>
-                  ))}
-                </div>
-                <div className="flex gap-2">
-                  <Input
-                    value={urlInput}
-                    onChange={e => setUrlInput(e.target.value)}
-                    placeholder={`Paste ${urlType} URL (e.g. YouTube link, image URL...)`}
-                    onKeyPress={e => e.key === "Enter" && handleAddUrl()}
-                  />
-                  <Button onClick={handleAddUrl} size="sm" disabled={isLive}>
-                    Add
+              <div className="flex gap-2 mb-2">
+                {(["video", "image", "audio"] as const).map(t => (
+                  <Button
+                    key={t}
+                    size="sm"
+                    variant={urlType === t ? "default" : "outline"}
+                    className="h-7 text-[10px] capitalize"
+                    onClick={() => setUrlType(t)}
+                  >
+                    {t}
                   </Button>
-                </div>
-              </Card>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                <Input
+                  value={urlInput}
+                  onChange={e => setUrlInput(e.target.value)}
+                  placeholder="Paste media URL here..."
+                  className="h-9 bg-slate-950/50 border-slate-700 text-sm"
+                  onKeyDown={e => e.key === "Enter" && handleAddUrl()}
+                />
+                <Button size="sm" onClick={handleAddUrl} className="h-9">Add</Button>
+              </div>
             </motion.div>
           )}
         </AnimatePresence>
 
-        {/* Media List */}
-        {mediaList.length > 0 && (
-          <Card className="glass-panel border-0 overflow-hidden">
-            <div className="p-3 border-b border-border/40 bg-primary/5">
-              <h4 className="font-bold text-sm text-foreground">Playlist ({mediaList.length})</h4>
-            </div>
-            <div className="max-h-48 overflow-y-auto">
-              {mediaList.map((item, idx) => (
-                <motion.div
-                  key={item.id}
-                  initial={{ opacity: 0, x: -10 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  className={`flex items-center gap-3 px-3 py-2.5 border-b border-border/20 last:border-0 cursor-pointer transition-colors ${
-                    idx === currentIndex
-                      ? "bg-ember/10 border-l-2 border-l-ember"
-                      : "hover:bg-primary/5 border-l-2 border-l-transparent"
-                  }`}
-                  onClick={() => { setCurrentIndex(idx); stopPlayback(); setTimeout(() => setIsPlaying(true), 50); }}
-                >
-                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${
-                    item.type === "video" ? "bg-blue-500/20" :
-                    item.type === "audio" ? "bg-purple-500/20" : "bg-emerald-500/20"
-                  }`}>
-                    {item.type === "video" && <Film className="w-4 h-4 text-blue-400" />}
-                    {item.type === "audio" && <Music className="w-4 h-4 text-purple-400" />}
-                    {item.type === "image" && <Image className="w-4 h-4 text-emerald-400" />}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate">{item.label}</p>
-                    <p className="text-[10px] text-muted-foreground capitalize">
-                      {item.type}{item.duration ? ` \u2022 ${formatTime(item.duration)}` : ""}
-                    </p>
-                  </div>
-                  <button
-                    onClick={e => { e.stopPropagation(); removeItem(idx); }}
-                    className="p-1 hover:bg-destructive/20 rounded"
-                  >
-                    <X className="w-3 h-3 text-destructive" />
-                  </button>
-                </motion.div>
-              ))}
-            </div>
-          </Card>
-        )}
-
-        {/* Player Controls */}
-        {current && (
-          <Card className="glass-panel border-0 overflow-hidden">
-            {/* Video/Image Display */}
-            {(current.type === "video" || current.type === "image") && (
-              <div className="relative bg-black aspect-video">
+        <div className="flex-1 flex flex-col min-h-0">
+          {/* Main Preview Screen */}
+          <div className="relative aspect-video bg-black group">
+            {current ? (
+              <div className="w-full h-full flex items-center justify-center">
                 {current.type === "video" && (
                   <video
                     ref={videoRef}
@@ -637,141 +456,207 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
                   />
                 )}
                 {current.type === "image" && (
-                  <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-void to-void/50">
+                  <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-slate-900 to-slate-950">
                     <img
                       src={current.url}
                       alt={current.label}
-                      className="max-w-full max-h-full object-contain"
-                    />
-                    {isPlaying && (
-                      <div className="absolute inset-0 flex items-center justify-center bg-black/20">
-                        <div className="w-16 h-16 rounded-full bg-white/20 flex items-center justify-center backdrop-blur">
-                          <div className="w-12 h-12 rounded-full bg-white/30 animate-pulse" />
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Progress bar for video */}
-                {current.type === "video" && (
-                  <div className="absolute bottom-0 left-0 right-0 h-1 bg-black/30">
-                    <div
-                      className="h-full bg-ember transition-all"
-                      style={{ width: `${(currentTime / duration) * 100}%` }}
+                      className="max-w-full max-h-full object-contain shadow-2xl"
                     />
                   </div>
                 )}
-
-                {/* Time display for video */}
-                {current.type === "video" && (
-                  <div className="absolute bottom-2 right-2 bg-black/70 px-2 py-1 rounded text-xs text-white font-mono">
-                    <span>{formatTime(currentTime)}</span>
-                    <span className="text-muted-foreground"> / </span>
-                    <span>{formatTime(duration)}</span>
+                {current.type === "audio" && (
+                  <div className="w-full h-full flex flex-col items-center justify-center bg-slate-950 relative overflow-hidden">
+                    <div className="absolute inset-0 opacity-20">
+                      <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-primary/30 via-transparent to-transparent animate-pulse" />
+                    </div>
+                    <Music className="w-20 h-20 text-primary mb-4 relative z-10" />
+                    <p className="text-white font-bold relative z-10">{current.label}</p>
+                    <audio
+                      ref={audioRef}
+                      src={current.url}
+                      onTimeUpdate={e => setCurrentTime(e.currentTarget.currentTime)}
+                      onLoadedMetadata={e => setDuration(e.currentTarget.duration)}
+                      onEnded={() => { if (!loop) handleNext(); }}
+                    />
                   </div>
                 )}
-              </div>
-            )}
 
-            {/* Audio-only display */}
-            {current.type === "audio" && (
-              <audio
-                ref={audioRef}
-                src={current.url}
-                onTimeUpdate={e => setCurrentTime(e.currentTarget.currentTime)}
-                onLoadedMetadata={e => setDuration(e.currentTarget.duration)}
-                onEnded={() => { if (!loop) handleNext(); }}
-              />
-            )}
-            {current.type === "audio" && (
-              <div className="p-8 bg-gradient-to-br from-purple-900/20 to-slate-900/40 flex flex-col items-center justify-center min-h-[200px]">
-                <Music className="w-16 h-16 text-purple-400/60 mb-4" />
-                <p className="text-foreground font-bold text-lg">{current.label}</p>
-                <p className="text-muted-foreground text-sm capitalize">{current.type}</p>
-              </div>
-            )}
-
-            {/* Playback Controls */}
-            <div className="p-4 space-y-3 bg-void/40">
-              {/* Progress bar */}
-              {(current.type === "video" || current.type === "audio") && (
-                <Slider
-                  value={[currentTime]}
-                  max={duration || 1}
-                  step={0.1}
-                  onValueChange={([v]) => {
-                    if (current.type === "video" && videoRef.current) videoRef.current.currentTime = v;
-                    if (current.type === "audio" && audioRef.current) audioRef.current.currentTime = v;
-                    setCurrentTime(v);
-                  }}
-                  className="w-full"
-                />
-              )}
-
-              {/* Main controls */}
-              <div className="flex items-center justify-between gap-4">
-                <div className="flex items-center gap-1">
-                  <Button variant="ghost" size="icon" onClick={handlePrev} className="hover:bg-primary/20">
-                    <SkipBack className="w-4 h-4" />
-                  </Button>
-                  <Button
-                    size="icon"
-                    onClick={togglePlay}
-                    className="bg-ember hover:bg-ember/90 text-ember-foreground w-10 h-10"
-                  >
-                    {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}
-                  </Button>
-                  <Button variant="ghost" size="icon" onClick={handleNext} className="hover:bg-primary/20">
-                    <SkipForward className="w-4 h-4" />
-                  </Button>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => setLoop(!loop)}
-                    className={loop ? "text-ember" : "text-muted-foreground"}
-                  >
-                    <Repeat className="w-4 h-4" />
-                  </Button>
-                  {current.type === "video" && (
-                    <Button variant="ghost" size="icon" onClick={toggleFullscreen}>
-                      <Maximize2 className="w-4 h-4" />
-                    </Button>
+                {/* Status Overlays */}
+                <div className="absolute top-4 left-4 flex gap-2">
+                  <div className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 ${
+                    isPlaying ? "bg-primary text-white" : "bg-slate-800 text-slate-400"
+                  }`}>
+                    <div className={`w-1.5 h-1.5 rounded-full ${isPlaying ? "bg-white animate-pulse" : "bg-slate-500"}`} />
+                    {isPlaying ? "Previewing" : "Paused"}
+                  </div>
+                  {isBroadcasting && (
+                    <div className="px-2 py-1 rounded bg-red-600 text-white text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 shadow-lg shadow-red-900/20">
+                      <Radio className="w-3 h-3" />
+                      Live to Viewers
+                    </div>
                   )}
                 </div>
 
-                {/* Volume */}
-                <div className="flex items-center gap-2 w-28">
-                  <button onClick={toggleMute} className="text-muted-foreground hover:text-foreground">
-                    {muted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-                  </button>
+                {/* Error Overlay */}
+                {captureError && (
+                  <div className="absolute inset-0 bg-black/80 flex items-center justify-center p-6 text-center z-50">
+                    <div className="space-y-3">
+                      <AlertCircle className="w-10 h-10 text-red-500 mx-auto" />
+                      <p className="text-red-400 text-sm font-medium">{captureError}</p>
+                      <Button size="sm" variant="outline" onClick={() => setCaptureError(null)}>Dismiss</Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="w-full h-full flex flex-col items-center justify-center text-slate-600 space-y-4">
+                <div className="w-16 h-16 rounded-full bg-slate-800/50 flex items-center justify-center">
+                  <Film className="w-8 h-8" />
+                </div>
+                <p className="text-sm">No media selected</p>
+                <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>
+                  Browse Files
+                </Button>
+              </div>
+            )}
+
+            {/* Hidden capture canvas */}
+            <canvas ref={canvasRef} className="hidden" />
+          </div>
+
+          {/* Controls Area */}
+          <div className="p-4 bg-slate-900/80 border-t border-slate-800">
+            {/* Progress Bar */}
+            {(current?.type === "video" || current?.type === "audio") && (
+              <div className="flex items-center gap-3 mb-4">
+                <span className="text-[10px] font-mono text-slate-500 w-8">{formatTime(currentTime)}</span>
+                <Slider
+                  value={[currentTime]}
+                  max={duration || 100}
+                  step={0.1}
+                  onValueChange={([val]) => {
+                    if (videoRef.current) videoRef.current.currentTime = val;
+                    if (audioRef.current) audioRef.current.currentTime = val;
+                    setCurrentTime(val);
+                  }}
+                  className="flex-1"
+                />
+                <span className="text-[10px] font-mono text-slate-500 w-8">{formatTime(duration)}</span>
+              </div>
+            )}
+
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1">
+                <Button variant="ghost" size="icon" className="h-8 w-8 text-slate-400" onClick={handlePrev}>
+                  <SkipBack className="w-4 h-4" />
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="icon"
+                  className="h-10 w-10 rounded-full bg-primary hover:bg-primary/90 text-white shadow-lg shadow-primary/20"
+                  onClick={isPlaying ? stopPlayback : startPlayback}
+                >
+                  {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5 ml-0.5" />}
+                </Button>
+                <Button variant="ghost" size="icon" className="h-8 w-8 text-slate-400" onClick={handleNext}>
+                  <SkipForward className="w-4 h-4" />
+                </Button>
+              </div>
+
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2 w-24">
+                  <Button variant="ghost" size="icon" className="h-7 w-7 text-slate-500" onClick={() => setMuted(!muted)}>
+                    {muted || volume === 0 ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+                  </Button>
                   <Slider
                     value={[muted ? 0 : volume]}
                     max={100}
-                    step={1}
-                    onValueChange={([v]) => handleVolumeChange(v)}
+                    onValueChange={([val]) => { setVolume(val); setMuted(val === 0); }}
+                    className="flex-1"
                   />
                 </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className={`h-8 w-8 ${loop ? "text-primary bg-primary/10" : "text-slate-500"}`}
+                  onClick={() => setLoop(!loop)}
+                >
+                  <Repeat className="w-4 h-4" />
+                </Button>
               </div>
             </div>
-          </Card>
-        )}
+          </div>
 
-        {/* Empty state */}
-        {mediaList.length === 0 && (
-          <Card className="glass-panel border-0 p-8 text-center">
-            <Film className="w-12 h-12 text-muted-foreground/40 mx-auto mb-3" />
-            <p className="text-muted-foreground text-sm">
-              Upload videos, images, or audio files to create a pre-stream playlist.
-              <br />
-              You can also add media from a URL.
-            </p>
-          </Card>
-        )}
-      </div>
+          {/* Playlist Area */}
+          <div className="flex-1 min-h-0 bg-slate-950/50 p-2 overflow-y-auto playlist-scrollbar">
+            <div className="space-y-1">
+              {mediaList.length === 0 ? (
+                <div className="py-8 text-center text-slate-600 text-xs italic">
+                  Playlist is empty
+                </div>
+              ) : (
+                mediaList.map((item, index) => (
+                  <motion.div
+                    key={item.id}
+                    layout
+                    className={`group flex items-center gap-3 p-2 rounded-md cursor-pointer transition-all ${
+                      currentIndex === index
+                        ? "bg-primary/10 border border-primary/20 shadow-sm"
+                        : "hover:bg-slate-800/50 border border-transparent"
+                    }`}
+                    onClick={() => {
+                      if (currentIndex !== index) {
+                        stopPlayback();
+                        setCurrentIndex(index);
+                      }
+                    }}
+                  >
+                    <div className={`w-8 h-8 rounded flex items-center justify-center ${
+                      currentIndex === index ? "bg-primary text-white" : "bg-slate-800 text-slate-400"
+                    }`}>
+                      {item.type === "video" && <Film className="w-4 h-4" />}
+                      {item.type === "image" && <ImageIcon className="w-4 h-4" />}
+                      {item.type === "audio" && <Music className="w-4 h-4" />}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className={`text-xs font-medium truncate ${currentIndex === index ? "text-white" : "text-slate-400"}`}>
+                        {item.label}
+                      </p>
+                      <p className="text-[10px] text-slate-600 uppercase tracking-tighter">
+                        {item.type} {item.duration ? `• ${formatTime(item.duration)}` : ""}
+                      </p>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6 opacity-0 group-hover:opacity-100 text-slate-600 hover:text-red-400 transition-all"
+                      onClick={(e) => { e.stopPropagation(); removeItem(index); }}
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </Button>
+                  </motion.div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+
+        <input
+          type="file"
+          ref={fileInputRef}
+          className="hidden"
+          multiple
+          accept="video/*,image/*,audio/*"
+          onChange={handleFileUpload}
+        />
+
+        <style>{`
+          .playlist-scrollbar::-webkit-scrollbar { width: 4px; }
+          .playlist-scrollbar::-webkit-scrollbar-track { background: transparent; }
+          .playlist-scrollbar::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 10px; }
+          .playlist-scrollbar::-webkit-scrollbar-thumb:hover { background: #334155; }
+        `}</style>
+      </Card>
     );
   }
 );
