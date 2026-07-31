@@ -157,6 +157,12 @@ export function attachSignalingServer(server: HttpServer) {
             safeSend(ws, currentStreamUpdatePayload());
             broadcastViewerCount();
             console.log(`[Signaling] Viewer connected: ${viewerId}`);
+
+            // FAST-START: Immediately notify broadcaster that a new viewer is ready
+            // This eliminates the need for the viewer to send 'viewer-join' and wait for round-trip.
+            if (broadcaster && currentSession && currentSession.broadcastMode !== "offline") {
+              safeSend(broadcaster.ws, { type: "viewer-joined", viewerId });
+            }
           }
           break;
         }

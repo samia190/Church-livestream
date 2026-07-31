@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-// Free, public, no-account-needed STUN servers
+// Professional WebRTC Infrastructure
 const ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
+  { urls: "stun:stun2.l.google.com:19302" },
+  { urls: "stun:stun.services.mozilla.com" },
+  { urls: "stun:stun.cloudflare.com:3478" },
 ];
 
 interface StartBroadcastArgs {
@@ -74,6 +77,7 @@ export function useBroadcaster() {
       iceServers: ICE_SERVERS,
       iceTransportPolicy: 'all',
       bundlePolicy: 'max-bundle',
+      // Pre-gather candidates to save time
       iceCandidatePoolSize: 10,
     });
     peersRef.current.set(viewerId, pc);
@@ -89,8 +93,12 @@ export function useBroadcaster() {
               ...sender.getParameters(),
               degradationPreference: 'maintain-framerate',
               encodings: [{
-                maxBitrate: 2500000,
+                // Start with a lower bitrate to ensure fast first frame on mobile data
+                // The browser will ramp up if bandwidth is available
+                maxBitrate: 1500000, 
                 maxFramerate: 30,
+                // Add priority to help with slow connections
+                networkPriority: 'high',
               }],
             });
           } catch (e) {

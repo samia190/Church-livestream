@@ -67,12 +67,23 @@ export default function MobileOptimizedVideo({
   // Connect stream to video element
   useEffect(() => {
     if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
-      // Auto-play with mute first (browser policy)
-      videoRef.current.muted = true;
-      videoRef.current.play().catch(() => {
-        // Auto-play blocked, user will need to tap
-      });
+      // Professional: Optimization for low-latency playback
+      const video = videoRef.current;
+      video.srcObject = stream;
+      
+      // Force low latency attributes
+      video.muted = true; // Required for autoplay
+      video.autoplay = true;
+      video.setAttribute('playsinline', 'true');
+      video.setAttribute('webkit-playsinline', 'true');
+      
+      // Attempt immediate playback
+      const playPromise = video.play();
+      if (playPromise !== undefined) {
+        playPromise.catch(error => {
+          console.log("[Video] Autoplay prevented, waiting for interaction", error);
+        });
+      }
     }
   }, [stream]);
 

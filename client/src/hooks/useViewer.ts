@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNetwork, getAdaptiveStreamSettings } from "./useNetwork";
 
+// Professional WebRTC Infrastructure
+// Note: For a production environment, you should use a paid TURN service (like Metered.ca, Twilio, or Xirsys)
+// to ensure 100% connectivity on restrictive mobile networks.
 const ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
   { urls: "stun:stun2.l.google.com:19302" },
-  { urls: "stun:stun3.l.google.com:19302" },
-  { urls: "stun:stun4.l.google.com:19302" },
+  { urls: "stun:stun.services.mozilla.com" },
+  { urls: "stun:stun.cloudflare.com:3478" },
 ];
 
 export type BroadcastMode = "offline" | "pre-stream" | "live";
@@ -48,6 +51,7 @@ export function useViewer() {
   const reconnectAttemptRef = useRef(0);
   const maxReconnectAttempts = 8;
   const isConnectingRef = useRef(false);
+  const connectionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [meta, setMeta] = useState<StreamMeta>({
@@ -97,6 +101,7 @@ export function useViewer() {
       iceServers: ICE_SERVERS,
       iceTransportPolicy: 'all',
       bundlePolicy: 'max-bundle',
+      // Pre-gather candidates to save 1-2 seconds during handshake
       iceCandidatePoolSize: 10,
     });
 
@@ -121,6 +126,10 @@ export function useViewer() {
       if (state === "connected") {
         setConnectionState("connected");
         reconnectAttemptRef.current = 0;
+        if (connectionTimeoutRef.current) {
+          clearTimeout(connectionTimeoutRef.current);
+          connectionTimeoutRef.current = null;
+        }
       } else if (["failed", "closed"].includes(state)) {
         setConnectionState("disconnected");
         setRemoteStream(null);
@@ -208,6 +217,7 @@ export function useViewer() {
 
       switch (msg.type) {
         case "welcome": {
+          // Immediately signal that we are ready to join to minimize round-trip time
           if (wsRef.current?.readyState === WebSocket.OPEN) {
             wsRef.current.send(JSON.stringify({ type: "viewer-join" }));
           }
@@ -285,6 +295,15 @@ export function useViewer() {
               JSON.stringify({ type: "webrtc-offer", sdp: offer })
             );
             setConnectionState("connecting");
+
+            // Professional: Set a timeout to detect stalled connections (e.g. 10s)
+            if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current);
+            connectionTimeoutRef.current = setTimeout(() => {
+              if (pc.connectionState !== 'connected') {
+                console.log("[useViewer] Connection stalled, attempting recovery...");
+                scheduleReconnect();
+              }
+            }, 10000);
           } catch (error) {
             console.error("[useViewer] Failed to create offer:", error);
             isConnectingRef.current = false;
