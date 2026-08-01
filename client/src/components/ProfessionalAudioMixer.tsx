@@ -760,7 +760,7 @@ export default function ProfessionalAudioMixer({
 
     const animFrame = requestAnimationFrame(meterLoop);
     return () => cancelAnimationFrame(animFrame);
-  }, [mediaStream, isMusicPlaying, isCapturingSystem, effects, monitorMuted, masterLevel: undefined as any]);
+  }, [mediaStream, isMusicPlaying, isCapturingSystem, effects, monitorMuted]);
 
   /* ── Music Player Controls ─────────────────────────────────────────────── */
   const handleMusicUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
