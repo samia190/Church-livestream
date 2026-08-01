@@ -12,12 +12,10 @@ import { updateStreamStatus as dbUpdateStreamStatus } from "../db";
  * answers and ICE candidates) needed to set up those peer connections, plus
  * lightweight "is anyone live right now" status.
  *
- * Topology: one broadcaster (the admin), many viewers. Because this is a
- * peer-to-peer mesh (no media server), the admin's own upload bandwidth is
- * shared across every connected viewer — this is fine for a small
- * congregation watching from home, but it is not going to smoothly support
- * hundreds of simultaneous viewers. That would need a dedicated media
- * server (SFU) or an RTMP-based service, which is out of scope here.
+ * CRITICAL FIX: When a viewer connects and the stream is already live,
+ * both the viewer AND the broadcaster are immediately notified to start
+ * WebRTC negotiation. This ensures viewers who join after the admin goes
+ * live can see the stream immediately.
  */
 
 interface SessionInfo {
@@ -46,7 +44,7 @@ function safeSend(ws: WebSocket, data: unknown) {
 }
 
 function broadcastToViewers(data: unknown) {
-  for (const viewer of viewers.values()) {
+  for (const viewer of Array.from(viewers.values())) {
     safeSend(viewer.ws, data);
   }
 }
@@ -90,7 +88,6 @@ async function endCurrentSession() {
   }
   currentSession = null;
   broadcastToViewers(currentStreamUpdatePayload());
-  // Tell every viewer to tear down its peer connection.
   broadcastToViewers({ type: "broadcast-ended" });
 }
 
@@ -112,7 +109,6 @@ export function attachSignalingServer(server: HttpServer) {
         case "subscribe": {
           const role: ClientRole = msg.role === "admin" ? "admin" : "viewer";
           if (role === "admin") {
-            // Only one active admin/broadcaster connection at a time.
             entry = { ws, role: "admin" };
             broadcaster = entry;
             safeSend(ws, currentStreamUpdatePayload());
@@ -124,6 +120,13 @@ export function attachSignalingServer(server: HttpServer) {
             safeSend(ws, { type: "welcome", viewerId });
             safeSend(ws, currentStreamUpdatePayload());
             broadcastViewerCount();
+
+            // FAST-START: If the stream is already live, immediately notify
+            // both the viewer and the broadcaster to start WebRTC negotiation.
+            if (broadcaster && currentSession) {
+              safeSend(ws, { type: "viewer-joined" });
+              safeSend(broadcaster.ws, { type: "viewer-joined", viewerId });
+            }
           }
           break;
         }
@@ -137,6 +140,14 @@ export function attachSignalingServer(server: HttpServer) {
             startedAt: Date.now(),
           };
           broadcastToViewers(currentStreamUpdatePayload());
+
+          // Notify all connected viewers to start WebRTC negotiation
+          for (const [viewerId, viewerEntry] of Array.from(viewers.entries())) {
+            safeSend(viewerEntry.ws, { type: "viewer-joined" });
+            if (broadcaster) {
+              safeSend(broadcaster.ws, { type: "viewer-joined", viewerId });
+            }
+          }
           break;
         }
 
@@ -147,9 +158,9 @@ export function attachSignalingServer(server: HttpServer) {
         }
 
         case "viewer-join": {
-          // A viewer is ready to receive an offer. Ask the broadcaster to
-          // create a peer connection for them.
           if (!entry || entry.role !== "viewer" || !entry.viewerId) return;
+          // Also tell the viewer to create their own offer (dual-mode)
+          safeSend(ws, { type: "viewer-joined" });
           if (broadcaster) {
             safeSend(broadcaster.ws, { type: "viewer-joined", viewerId: entry.viewerId });
           }
@@ -157,31 +168,44 @@ export function attachSignalingServer(server: HttpServer) {
         }
 
         case "webrtc-offer": {
-          // admin -> specific viewer
-          if (!entry || entry.role !== "admin") return;
-          const target = viewers.get(msg.targetViewerId);
-          if (target) {
-            safeSend(target.ws, { type: "webrtc-offer", sdp: msg.sdp });
+          if (entry && entry.role === "admin" && msg.targetViewerId) {
+            const target = viewers.get(msg.targetViewerId);
+            if (target) {
+              safeSend(target.ws, { type: "webrtc-offer", sdp: msg.sdp });
+            }
+          } else if (entry && entry.role === "viewer") {
+            if (broadcaster) {
+              safeSend(broadcaster.ws, {
+                type: "webrtc-offer",
+                viewerId: entry.viewerId,
+                sdp: msg.sdp,
+              });
+            }
           }
           break;
         }
 
         case "webrtc-answer": {
-          // viewer -> admin, tagged with viewerId
-          if (!entry || entry.role !== "viewer" || !entry.viewerId) return;
-          if (broadcaster) {
-            safeSend(broadcaster.ws, {
-              type: "webrtc-answer",
-              viewerId: entry.viewerId,
-              sdp: msg.sdp,
-            });
+          if (entry && entry.role === "viewer" && entry.viewerId) {
+            if (broadcaster) {
+              safeSend(broadcaster.ws, {
+                type: "webrtc-answer",
+                viewerId: entry.viewerId,
+                sdp: msg.sdp,
+              });
+            }
+          } else if (entry && entry.role === "admin" && msg.targetViewerId) {
+            const target = viewers.get(msg.targetViewerId);
+            if (target) {
+              safeSend(target.ws, { type: "webrtc-answer", sdp: msg.sdp });
+            }
           }
           break;
         }
 
         case "webrtc-ice-candidate": {
           if (!entry) return;
-          if (entry.role === "admin") {
+          if (entry.role === "admin" && msg.targetViewerId) {
             const target = viewers.get(msg.targetViewerId);
             if (target) {
               safeSend(target.ws, { type: "webrtc-ice-candidate", candidate: msg.candidate });

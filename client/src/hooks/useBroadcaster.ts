@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 // Professional WebRTC Infrastructure
 // STUN servers for NAT discovery + redundant sources
-// Mobile devices on carrier networks (CGNAT) need TURN relay as fallback
+// TURN servers ensure connectivity through carrier-grade NATs (CGNAT) on 3G/4G/5G
 const ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
@@ -35,6 +35,9 @@ export function useBroadcaster() {
   const iceCandidateBuffersRef = useRef<Map<string, any[]>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
   const originalCameraStreamRef = useRef<MediaStream | null>(null);
+  const sessionInfoRef = useRef<{ sessionId: string; title: string; description: string; initialMode: string } | null>(null);
+  const wsReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wsReconnectAttemptRef = useRef(0);
   const [connected, setConnected] = useState(false);
   const [isLive, setIsLive] = useState(false);
   const [broadcastMode, setBroadcastMode] = useState<BroadcastMode>("offline");
@@ -82,11 +85,17 @@ export function useBroadcaster() {
   }, [isLive]);
 
   const createPeerForViewer = useCallback((viewerId: string) => {
+    // If we already have a peer for this viewer, close it first
+    const existingPc = peersRef.current.get(viewerId);
+    if (existingPc) {
+      try { existingPc.close(); } catch (e) {}
+      peersRef.current.delete(viewerId);
+    }
+
     const pc = new RTCPeerConnection({
       iceServers: ICE_SERVERS,
       iceTransportPolicy: 'all',
       bundlePolicy: 'max-bundle',
-      // Pre-gather candidates to save time
       iceCandidatePoolSize: 10,
     });
     peersRef.current.set(viewerId, pc);
@@ -103,15 +112,12 @@ export function useBroadcaster() {
               degradationPreference: 'maintain-framerate',
               encodings: [{
                 // Start with a lower bitrate to ensure fast first frame on mobile data
-                // The browser will ramp up if bandwidth is available
-                maxBitrate: 1500000, 
+                maxBitrate: 1500000,
                 maxFramerate: 30,
-                // Add priority to help with slow connections
                 networkPriority: 'high',
               }],
             });
           } catch (e) {
-            // Some browsers don't support setParameters
             console.log('[useBroadcaster] setParameters not supported:', e);
           }
         }
@@ -120,8 +126,6 @@ export function useBroadcaster() {
 
     pc.onicecandidate = event => {
       if (event.candidate && wsRef.current?.readyState === WebSocket.OPEN) {
-        // Send ICE candidates with both targetViewerId (for server routing to viewer) 
-        // and viewerId (for server routing to broadcaster when viewer is offerer)
         wsRef.current.send(
           JSON.stringify({
             type: "webrtc-ice-candidate",
@@ -135,22 +139,29 @@ export function useBroadcaster() {
 
     pc.onconnectionstatechange = () => {
       const state = pc.connectionState;
-      if (["failed", "closed", "disconnected"].includes(state)) {
-        console.log(`[useBroadcaster] Viewer ${viewerId} connection state: ${state}`);
-        pc.close();
+      console.log(`[useBroadcaster] Viewer ${viewerId} connection state: ${state}`);
+      if (state === "failed") {
+        // Try ICE restart before giving up
+        try { pc.restartIce(); } catch (e) { console.log('[useBroadcaster] ICE restart failed:', e); }
+        // If still failed after 5s, clean up
+        setTimeout(() => {
+          if (pc.connectionState === 'failed') {
+            try { pc.close(); } catch (e) {}
+            peersRef.current.delete(viewerId);
+          }
+        }, 5000);
+      } else if (state === "closed") {
         peersRef.current.delete(viewerId);
+      } else if (state === "disconnected") {
+        // Brief connectivity loss — try ICE restart
+        try { pc.restartIce(); } catch (e) {}
       }
     };
 
-    // Monitor bitrate and adapt
     pc.oniceconnectionstatechange = () => {
       if (pc.iceConnectionState === 'failed') {
         console.log(`[useBroadcaster] ICE failed for viewer ${viewerId}, attempting restart`);
-        try {
-          pc.restartIce();
-        } catch (e) {
-          console.log('[useBroadcaster] ICE restart failed:', e);
-        }
+        try { pc.restartIce(); } catch (e) { console.log('[useBroadcaster] ICE restart failed:', e); }
       }
     };
 
@@ -159,19 +170,20 @@ export function useBroadcaster() {
 
   const sendOfferToViewer = useCallback(
     async (viewerId: string) => {
-      // If we already have a peer connection for this viewer (e.g. from a viewer-initiated offer),
-      // don't create a new one - the viewer-initiated flow is already in progress
+      // If we already have a peer connection for this viewer that's connected or connecting, skip
       const existingPc = peersRef.current.get(viewerId);
       if (existingPc) {
-        // If the connection is already established or connecting, skip
-        if (['connected', 'connecting', 'new'].includes(existingPc.connectionState)) {
+        if (['connected', 'connecting'].includes(existingPc.connectionState)) {
           console.log(`[useBroadcaster] Viewer ${viewerId} already has active connection, skipping broadcaster offer`);
           return;
         }
+        // Connection is in 'new' or 'failed' state — recreate
+        try { existingPc.close(); } catch (e) {}
+        peersRef.current.delete(viewerId);
       }
-      
+
       const pc = createPeerForViewer(viewerId);
-      
+
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       wsRef.current?.send(
@@ -185,6 +197,14 @@ export function useBroadcaster() {
   const handleViewerOffer = useCallback(
     async (viewerId: string, sdp: RTCSessionDescriptionInit) => {
       console.log(`[useBroadcaster] Received viewer-initiated offer from ${viewerId}`);
+
+      // If we already have a connected peer, skip
+      const existingPc = peersRef.current.get(viewerId);
+      if (existingPc && existingPc.connectionState === 'connected') {
+        console.log(`[useBroadcaster] Viewer ${viewerId} already connected, skipping offer`);
+        return;
+      }
+
       const pc = createPeerForViewer(viewerId);
       try {
         await pc.setRemoteDescription(new RTCSessionDescription(sdp));
@@ -193,14 +213,13 @@ export function useBroadcaster() {
         wsRef.current?.send(
           JSON.stringify({ type: "webrtc-answer", targetViewerId: viewerId, sdp: answer })
         );
-        
-        // Flush buffered ICE candidates and answers for this viewer
+
+        // Flush buffered ICE candidates for this viewer
         const buf = iceCandidateBuffersRef.current.get(viewerId);
         if (buf && buf.length > 0) {
           for (const item of buf) {
             try {
               if (item.type === 'answer') {
-                // Apply buffered answer
                 await pc.setRemoteDescription(new RTCSessionDescription(item.sdp));
               } else {
                 await pc.addIceCandidate(new RTCIceCandidate(item));
@@ -213,23 +232,12 @@ export function useBroadcaster() {
         }
       } catch (error) {
         console.error(`[useBroadcaster] Failed to handle viewer offer from ${viewerId}:`, error);
+        try { pc.close(); } catch (e) {}
         peersRef.current.delete(viewerId);
         iceCandidateBuffersRef.current.delete(viewerId);
-        pc.close();
       }
     },
     [createPeerForViewer]
-  );
-
-  // Handle answer from a viewer to our offer (targeted by viewerId)
-  const handleViewerAnswer = useCallback(
-    async (viewerId: string, sdp: RTCSessionDescriptionInit) => {
-      const pc = peersRef.current.get(viewerId);
-      if (pc) {
-        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-      }
-    },
-    []
   );
 
   const [chatMessages, setChatMessages] = useState<any[]>([]);
@@ -248,14 +256,34 @@ export function useBroadcaster() {
           await sendOfferToViewer(msg.viewerId);
           break;
         case "webrtc-answer": {
-          // Answer from viewer to our offer (server routes it with viewerId)
-          // Also handle targeted answer from server (targetViewerId)
           const answerViewerId = msg.viewerId || msg.targetViewerId;
           if (answerViewerId && msg.sdp) {
             const pc = peersRef.current.get(answerViewerId);
             if (pc) {
-              await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
-              console.log(`[useBroadcaster] Applied answer from viewer ${answerViewerId}`);
+              try {
+                await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+                console.log(`[useBroadcaster] Applied answer from viewer ${answerViewerId}`);
+
+                // Flush buffered ICE candidates
+                const buf = iceCandidateBuffersRef.current.get(answerViewerId);
+                if (buf && buf.length > 0) {
+                  for (const item of buf) {
+                    if (item.type === 'answer') continue; // Already applied
+                    try {
+                      await pc.addIceCandidate(new RTCIceCandidate(item));
+                    } catch (err) {
+                      console.error(`[useBroadcaster] Failed to flush ICE candidate for ${answerViewerId}:`, err);
+                    }
+                  }
+                  iceCandidateBuffersRef.current.delete(answerViewerId);
+                }
+              } catch (err) {
+                console.error(`[useBroadcaster] Failed to set remote description for ${answerViewerId}:`, err);
+                // Buffer for later
+                const buf = iceCandidateBuffersRef.current.get(answerViewerId) || [];
+                buf.push({ type: 'answer', sdp: msg.sdp });
+                iceCandidateBuffersRef.current.set(answerViewerId, buf);
+              }
             } else {
               // Buffer for later if peer connection not yet created
               const buf = iceCandidateBuffersRef.current.get(answerViewerId) || [];
@@ -266,24 +294,33 @@ export function useBroadcaster() {
           break;
         }
         case "webrtc-offer": {
-          // Viewer-initiated offer: broadcaster answers it (server routes with viewerId)
+          // Viewer-initiated offer: broadcaster answers it
           if (msg.viewerId && msg.sdp) {
             await handleViewerOffer(msg.viewerId, msg.sdp);
           }
-          // Also handle targeted offer from server (targetViewerId - when server routes to a viewer)
-          // This shouldn't happen on broadcaster side but handle gracefully
           break;
         }
         case "webrtc-ice-candidate": {
-          // Handle ICE candidates from viewers (identified by viewerId or targetViewerId)
           const viewerId = msg.viewerId || msg.targetViewerId;
           if (viewerId && msg.candidate) {
             const pc = peersRef.current.get(viewerId);
             if (pc) {
               try {
-                await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+                // Only add if remote description is set
+                if (pc.remoteDescription) {
+                  await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+                } else {
+                  // Buffer until remote description is set
+                  const buf = iceCandidateBuffersRef.current.get(viewerId) || [];
+                  buf.push(msg.candidate);
+                  iceCandidateBuffersRef.current.set(viewerId, buf);
+                }
               } catch (err) {
                 console.error("[useBroadcaster] Failed to add ICE candidate", err);
+                // Buffer for retry
+                const buf = iceCandidateBuffersRef.current.get(viewerId) || [];
+                buf.push(msg.candidate);
+                iceCandidateBuffersRef.current.set(viewerId, buf);
               }
             } else {
               // Buffer ICE candidates until peer connection is created
@@ -292,26 +329,12 @@ export function useBroadcaster() {
               iceCandidateBuffersRef.current.set(viewerId, buf);
             }
           }
-          // If this is a targeted ICE candidate from server (targetViewerId) meant for a viewer,
-          // forward it to that viewer via WebSocket
-          if (msg.targetViewerId && !msg.viewerId && msg.candidate) {
-            // This is broadcaster's own ICE candidate being routed back - skip
-            console.log(`[useBroadcaster] ICE candidate for targetViewerId ${msg.targetViewerId}, checking...`);
-            const targetPc = peersRef.current.get(msg.targetViewerId);
-            if (targetPc) {
-              try {
-                await targetPc.addIceCandidate(new RTCIceCandidate(msg.candidate));
-              } catch (err) {
-                console.error("[useBroadcaster] Failed to add targeted ICE candidate", err);
-              }
-            }
-          }
           break;
         }
         case "viewer-left": {
           const pc = peersRef.current.get(msg.viewerId);
           if (pc) {
-            pc.close();
+            try { pc.close(); } catch (e) {}
             peersRef.current.delete(msg.viewerId);
           }
           iceCandidateBuffersRef.current.delete(msg.viewerId);
@@ -336,7 +359,7 @@ export function useBroadcaster() {
           break;
       }
     },
-    [sendOfferToViewer, handleViewerOffer, handleViewerAnswer, iceCandidateBuffersRef]
+    [sendOfferToViewer, handleViewerOffer]
   );
 
   const sendChatMessage = useCallback((message: string, user: string = "Admin") => {
@@ -361,54 +384,76 @@ export function useBroadcaster() {
   const startBroadcast = useCallback(
     (stream: MediaStream, session: StartBroadcastArgs) => {
       localStreamRef.current = stream;
-      // Save the original camera stream for later restoration
-      // If provided, use the explicit camera stream; otherwise use the broadcast stream
       originalCameraStreamRef.current = session.originalCameraStream || stream;
 
       const initialMode = session.initialMode || "live";
-
-      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const ws = new WebSocket(`${protocol}//${window.location.host}/api/stream-sync`);
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        setConnected(true);
-        ws.send(JSON.stringify({ type: "subscribe", role: "admin" }));
-        ws.send(
-          JSON.stringify({
-            type: "go-live",
-            sessionId: session.sessionId,
-            title: session.title,
-            description: session.description || "",
-            broadcastMode: initialMode,
-          })
-        );
-        setIsLive(true);
-        setBroadcastMode(initialMode);
+      sessionInfoRef.current = {
+        sessionId: session.sessionId,
+        title: session.title,
+        description: session.description || "",
+        initialMode,
       };
-      ws.onmessage = handleMessage;
-      ws.onclose = () => {
-        setConnected(false);
-        setIsLive(false);
-        setBroadcastMode("offline");
+
+      const connectWs = () => {
+        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const ws = new WebSocket(`${protocol}//${window.location.host}/api/stream-sync`);
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+          setConnected(true);
+          wsReconnectAttemptRef.current = 0;
+          ws.send(JSON.stringify({ type: "subscribe", role: "admin" }));
+          ws.send(
+            JSON.stringify({
+              type: "go-live",
+              sessionId: session.sessionId,
+              title: session.title,
+              description: session.description || "",
+              broadcastMode: initialMode,
+            })
+          );
+          setIsLive(true);
+          setBroadcastMode(initialMode);
+        };
+        ws.onmessage = handleMessage;
+        ws.onclose = () => {
+          setConnected(false);
+          // SILENT background reconnection — never reload the page
+          if (isLive) {
+            const delay = Math.min(1000 * Math.pow(1.5, Math.min(wsReconnectAttemptRef.current, 8)), 10000);
+            wsReconnectAttemptRef.current++;
+            console.log(`[useBroadcaster] WebSocket closed, reconnecting in ${delay}ms`);
+            wsReconnectTimerRef.current = setTimeout(() => connectWs(), delay);
+          }
+        };
+        ws.onerror = () => setConnected(false);
       };
-      ws.onerror = () => setConnected(false);
+
+      connectWs();
     },
-    [handleMessage]
+    [handleMessage, isLive]
   );
 
   const stopBroadcast = useCallback(() => {
+    if (wsReconnectTimerRef.current) {
+      clearTimeout(wsReconnectTimerRef.current);
+      wsReconnectTimerRef.current = null;
+    }
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: "end-live" }));
     }
     wsRef.current?.close();
     wsRef.current = null;
 
-    peersRef.current.forEach(pc => pc.close());
+    peersRef.current.forEach(pc => {
+      try { pc.close(); } catch (e) {}
+    });
     peersRef.current.clear();
+    iceCandidateBuffersRef.current.clear();
 
     localStreamRef.current = null;
     originalCameraStreamRef.current = null;
+    sessionInfoRef.current = null;
     setIsLive(false);
     setViewerCount(0);
     setBroadcastMode("offline");
@@ -440,10 +485,8 @@ export function useBroadcaster() {
       const newVideoTrack = newStream.getVideoTracks()[0];
       const newAudioTrack = newStream.getAudioTracks()[0];
 
-      // Replace tracks in all peer connections
       for (const pc of Array.from(peersRef.current.values())) {
         const senders = pc.getSenders();
-
         for (const sender of senders) {
           if (sender.track?.kind === "video" && newVideoTrack) {
             await sender.replaceTrack(newVideoTrack);
@@ -457,7 +500,6 @@ export function useBroadcaster() {
 
       localStreamRef.current = newStream;
 
-      // Notify server of mode change to pre-stream
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({
           type: "broadcast-mode-changed",
@@ -473,9 +515,6 @@ export function useBroadcaster() {
     }
   }, []);
 
-  /**
-   * Switch back to the original camera/microphone stream.
-   */
   const restoreOriginalStream = useCallback(async () => {
     const originalStream = originalCameraStreamRef.current;
     if (!originalStream) {
@@ -488,7 +527,6 @@ export function useBroadcaster() {
 
       for (const pc of Array.from(peersRef.current.values())) {
         const senders = pc.getSenders();
-
         for (const sender of senders) {
           if (sender.track?.kind === "video" && videoTrack) {
             await sender.replaceTrack(videoTrack);
@@ -517,9 +555,6 @@ export function useBroadcaster() {
     }
   }, []);
 
-  /**
-   * Update the local stream when camera device is switched.
-   */
   const updateLocalStream = useCallback((newStream: MediaStream) => {
     localStreamRef.current = newStream;
     originalCameraStreamRef.current = newStream;
@@ -537,9 +572,6 @@ export function useBroadcaster() {
     });
   }, []);
 
-  /**
-   * Go live from pre-stream mode — restore the camera stream and switch server mode to "live".
-   */
   const goLiveFromPreStream = useCallback(async () => {
     const originalStream = originalCameraStreamRef.current;
     if (originalStream) {

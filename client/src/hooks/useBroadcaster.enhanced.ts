@@ -265,7 +265,7 @@ export function useBroadcaster() {
       const newAudioTrack = newStream.getAudioTracks()[0];
 
       // Replace tracks in all peer connections
-      for (const pc of peersRef.current.values()) {
+      for (const pc of Array.from(peersRef.current.values())) {
         const senders = pc.getSenders();
 
         for (const sender of senders) {
@@ -306,7 +306,7 @@ export function useBroadcaster() {
       const videoTrack = originalStream.getVideoTracks()[0];
       const audioTrack = originalStream.getAudioTracks()[0];
 
-      for (const pc of peersRef.current.values()) {
+      for (const pc of Array.from(peersRef.current.values())) {
         const senders = pc.getSenders();
 
         for (const sender of senders) {

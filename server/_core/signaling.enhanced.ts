@@ -14,6 +14,12 @@ import { updateStreamStatus as dbUpdateStreamStatus } from "../db";
  *
  * The broadcast mode is synchronized across all clients so viewers know
  * whether they're watching pre-stream media or a live camera feed.
+ *
+ * CRITICAL FIX: When a new viewer connects and the stream is already live,
+ * the server immediately tells the viewer to start WebRTC negotiation
+ * (sends "viewer-joined" to the viewer) AND tells the broadcaster about
+ * the new viewer. This dual notification ensures the fastest possible
+ * connection regardless of which side initiates the WebRTC handshake.
  */
 
 type BroadcastMode = "offline" | "pre-stream" | "live";
@@ -45,7 +51,7 @@ function safeSend(ws: WebSocket, data: unknown) {
 }
 
 function broadcastToViewers(data: unknown) {
-  for (const viewer of viewers.values()) {
+  for (const viewer of Array.from(viewers.values())) {
     safeSend(viewer.ws, data);
   }
 }
@@ -83,6 +89,20 @@ function broadcastViewerCount() {
   const payload = { type: "viewer-count-update", viewers: viewers.size };
   broadcastToViewers(payload);
   if (broadcaster) safeSend(broadcaster.ws, payload);
+}
+
+/**
+ * Notify a specific viewer to start WebRTC negotiation.
+ * Also notify the broadcaster about the viewer so they can create an offer.
+ * This dual-notification ensures the fastest possible connection.
+ */
+function notifyViewerToJoin(viewerId: string, viewerWs: WebSocket) {
+  // Tell the viewer to create their own offer (viewer-initiated flow)
+  safeSend(viewerWs, { type: "viewer-joined" });
+  // Tell the broadcaster about the new viewer (broadcaster-initiated flow)
+  if (broadcaster) {
+    safeSend(broadcaster.ws, { type: "viewer-joined", viewerId });
+  }
 }
 
 /**
@@ -158,10 +178,14 @@ export function attachSignalingServer(server: HttpServer) {
             broadcastViewerCount();
             console.log(`[Signaling] Viewer connected: ${viewerId}`);
 
-            // FAST-START: Immediately notify broadcaster that a new viewer is ready
-            // This eliminates the need for the viewer to send 'viewer-join' and wait for round-trip.
-            if (broadcaster && currentSession && currentSession.broadcastMode !== "offline") {
-              safeSend(broadcaster.ws, { type: "viewer-joined", viewerId });
+            // FAST-START: If the stream is already live, immediately notify
+            // both the viewer and the broadcaster to start WebRTC negotiation.
+            // This is the critical fix: previously, if a viewer joined AFTER
+            // the admin went live, they would see "No Stream Available" because
+            // the notification was only sent to the broadcaster, not to the viewer.
+            if (currentSession && currentSession.broadcastMode !== "offline") {
+              notifyViewerToJoin(viewerId, ws);
+              console.log(`[Signaling] Notified new viewer ${viewerId} about active stream`);
             }
           }
           break;
@@ -184,13 +208,11 @@ export function attachSignalingServer(server: HttpServer) {
           console.log(`[Signaling] Stream started in ${broadcastMode} mode`);
 
           // NOTIFY ALL CONNECTED VIEWERS: When stream goes live, trigger join for all waiting viewers
+          // This ensures viewers who were already on the page (seeing "offline") immediately
+          // get notified to start the WebRTC handshake.
           if (broadcastMode !== "offline") {
-            for (const [viewerId, viewerEntry] of viewers.entries()) {
-              if (broadcaster) {
-                safeSend(broadcaster.ws, { type: "viewer-joined", viewerId });
-              }
-              // Also send viewer-join to the viewer so they can create their own offer
-              safeSend(viewerEntry.ws, { type: "viewer-joined" });
+            for (const [viewerId, viewerEntry] of Array.from(viewers.entries())) {
+              notifyViewerToJoin(viewerId, viewerEntry.ws);
             }
             console.log(`[Signaling] Notified ${viewers.size} viewers about live stream`);
           }
@@ -211,11 +233,11 @@ export function attachSignalingServer(server: HttpServer) {
           if (currentSession && newMode !== currentSession.broadcastMode) {
             broadcastModeChange(newMode);
 
-            // When switching TO live, notify all viewers to join
-            if (newMode !== "offline" && broadcaster) {
-              for (const [viewerId, viewerEntry] of viewers.entries()) {
-                safeSend(broadcaster.ws, { type: "viewer-joined", viewerId });
-                safeSend(viewerEntry.ws, { type: "viewer-joined" });
+            // When switching TO live (from pre-stream), re-notify all viewers
+            // to ensure they have an active WebRTC connection
+            if (newMode !== "offline") {
+              for (const [viewerId, viewerEntry] of Array.from(viewers.entries())) {
+                notifyViewerToJoin(viewerId, viewerEntry.ws);
               }
               console.log(`[Signaling] Mode changed to ${newMode}, notified ${viewers.size} viewers`);
             }
@@ -224,7 +246,12 @@ export function attachSignalingServer(server: HttpServer) {
         }
 
         case "viewer-join": {
+          // A viewer is ready to receive an offer. Ask the broadcaster to
+          // create a peer connection for them.
           if (!entry || entry.role !== "viewer" || !entry.viewerId) return;
+          // Also send the viewer a "viewer-joined" message so they can
+          // create their own offer (dual-mode for maximum compatibility)
+          safeSend(ws, { type: "viewer-joined" });
           if (broadcaster) {
             safeSend(broadcaster.ws, { type: "viewer-joined", viewerId: entry.viewerId });
           }

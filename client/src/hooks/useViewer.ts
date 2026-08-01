@@ -3,7 +3,7 @@ import { useNetwork, getAdaptiveStreamSettings } from "./useNetwork";
 
 // Professional WebRTC Infrastructure
 // STUN servers for NAT traversal + multiple redundant sources
-// For production, add a TURN server for guaranteed mobile connectivity
+// TURN servers ensure connectivity through carrier-grade NATs (CGNAT) on 3G/4G/5G
 const ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
@@ -12,10 +12,10 @@ const ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun4.l.google.com:19302" },
   { urls: "stun:stun.services.mozilla.com" },
   { urls: "stun:stun.cloudflare.com:3478" },
-  { urls: "stun:stun1.l.google.com:19302" },
-  { urls: "stun:stun2.l.google.com:19302" },
-  { urls: "stun:stun3.l.google.com:19302" },
-  { urls: "stun:stun4.l.google.com:19302" },
+  // Public TURN relay — critical for mobile devices behind CGNAT
+  { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
+  { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
+  { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" },
 ];
 
 export type BroadcastMode = "offline" | "pre-stream" | "live";
@@ -42,25 +42,29 @@ type ConnectionState = "connecting" | "connected" | "disconnected" | "reconnecti
 
 /**
  * useViewer - Mobile-optimized WebRTC viewer hook
- * 
- * SUPPORTS TWO HANDSHAKE MODES:
- * 1. Broadcaster-initiated: Server tells broadcaster to create offer for viewer
- * 2. Viewer-initiated: Viewer creates offer and sends to broadcaster
- * 
- * This dual-mode approach ensures mobile devices (which may miss the fast-start
- * broadcast from the server) can always establish a connection.
+ *
+ * CRITICAL DESIGN PRINCIPLES:
+ * 1. NEVER reload the page on connection issues — all reconnection happens silently in the background
+ * 2. The WebSocket effect must NOT depend on any state that changes during a stream (e.g. meta.isLive)
+ *    to avoid tearing down and recreating the socket mid-stream
+ * 3. Support both viewer-initiated and broadcaster-initiated WebRTC handshakes for maximum compatibility
+ * 4. Buffer ICE candidates properly and flush them when the peer connection is ready
+ * 5. Use ICE restarts instead of full connection teardown when ICE fails
  */
 export function useViewer() {
   const network = useNetwork();
   const wsRef = useRef<WebSocket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wsReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptRef = useRef(0);
-  const maxReconnectAttempts = 10;
+  const wsReconnectAttemptRef = useRef(0);
+  const maxReconnectAttempts = 999; // Effectively unlimited — keep trying
   const isConnectingRef = useRef(false);
   const connectionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const iceCandidateBufferRef = useRef<any[]>([]);
   const hasReceivedAnswerRef = useRef(false);
+  const metaRef = useRef<StreamMeta | null>(null); // Keep latest meta in a ref for use inside stable callbacks
 
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [meta, setMeta] = useState<StreamMeta>({
@@ -78,6 +82,11 @@ export function useViewer() {
     quality: network.quality,
     adaptiveSettings: getAdaptiveStreamSettings(network.quality),
   });
+
+  // Keep metaRef in sync so stable callbacks can read the latest meta
+  useEffect(() => {
+    metaRef.current = meta;
+  }, [meta]);
 
   // Update network info when network quality changes
   useEffect(() => {
@@ -99,10 +108,10 @@ export function useViewer() {
     }
     iceCandidateBufferRef.current = [];
     hasReceivedAnswerRef.current = false;
+    isConnectingRef.current = false;
   }, []);
 
   const createPeerConnection = useCallback(() => {
-    const settings = getAdaptiveStreamSettings(network.quality);
     const pc = new RTCPeerConnection({
       iceServers: ICE_SERVERS,
       iceTransportPolicy: 'all',
@@ -127,8 +136,8 @@ export function useViewer() {
 
     pc.onconnectionstatechange = () => {
       const state = pc.connectionState;
-      console.log(`[useViewer] Connection state: ${state}`);
-      
+      console.log(`[useViewer] Peer connection state: ${state}`);
+
       if (state === "connected") {
         setConnectionState("connected");
         reconnectAttemptRef.current = 0;
@@ -136,18 +145,44 @@ export function useViewer() {
           clearTimeout(connectionTimeoutRef.current);
           connectionTimeoutRef.current = null;
         }
-      } else if (["failed", "closed"].includes(state)) {
+      } else if (state === "failed") {
+        // ICE failed — try ICE restart before giving up
+        console.log('[useViewer] Connection failed, attempting ICE restart');
+        setConnectionState("reconnecting");
+        try {
+          pc.restartIce();
+        } catch (e) {
+          console.error('[useViewer] ICE restart failed:', e);
+          // Fall through to scheduleReconnect
+          scheduleReconnect();
+        }
+        // If ICE restart doesn't recover within 5s, do a full reconnect
+        if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current);
+        connectionTimeoutRef.current = setTimeout(() => {
+          if (pcRef.current && pcRef.current.connectionState !== 'connected') {
+            console.log('[useViewer] ICE restart did not recover, full reconnect');
+            cleanupPeerConnection();
+            scheduleReconnect();
+          }
+        }, 5000);
+      } else if (state === "closed") {
         setConnectionState("disconnected");
         setRemoteStream(null);
-        scheduleReconnect();
       } else if (state === "disconnected") {
+        // Brief connectivity loss — don't tear down, just mark as reconnecting
         setConnectionState("reconnecting");
-        scheduleReconnect();
+        // Try ICE restart first
+        try {
+          pc.restartIce();
+        } catch (e) {
+          console.error('[useViewer] ICE restart on disconnect failed:', e);
+        }
       }
     };
 
     pc.oniceconnectionstatechange = () => {
       const state = pc.iceConnectionState;
+      console.log(`[useViewer] ICE connection state: ${state}`);
       if (state === "failed") {
         console.log('[useViewer] ICE connection failed, attempting recovery');
         try {
@@ -159,7 +194,7 @@ export function useViewer() {
     };
 
     return pc;
-  }, [network.quality]);
+  }, []);
 
   const scheduleReconnect = useCallback(() => {
     if (reconnectTimerRef.current) {
@@ -172,19 +207,22 @@ export function useViewer() {
       return;
     }
 
-    const delay = Math.min(1000 * Math.pow(2, reconnectAttemptRef.current), 15000);
+    const delay = Math.min(1000 * Math.pow(2, Math.min(reconnectAttemptRef.current, 4)), 15000);
     reconnectAttemptRef.current++;
 
-    console.log(`[useViewer] Scheduling reconnect in ${delay}ms (attempt ${reconnectAttemptRef.current})`);
+    console.log(`[useViewer] Scheduling WebRTC reconnect in ${delay}ms (attempt ${reconnectAttemptRef.current})`);
 
-    reconnectTimerRef.current = setTimeout(async () => {
+    reconnectTimerRef.current = setTimeout(() => {
+      // Only reconnect if the WebSocket is still alive
       if (wsRef.current?.readyState === WebSocket.OPEN && !isConnectingRef.current) {
         console.log('[useViewer] Reconnecting via WebSocket re-subscription');
+        cleanupPeerConnection();
         // Send viewer-join to re-establish the WebRTC connection
         wsRef.current.send(JSON.stringify({ type: "viewer-join" }));
+        setConnectionState("reconnecting");
       }
     }, delay);
-  }, []);
+  }, [cleanupPeerConnection]);
 
   // Set up ontrack handler for a peer connection
   const setupTrackHandler = useCallback((pc: RTCPeerConnection) => {
@@ -196,11 +234,13 @@ export function useViewer() {
         stream.getAudioTracks().forEach(t => { t.enabled = true; });
         stream.getVideoTracks().forEach(t => { t.enabled = true; });
         setRemoteStream(stream);
+        setConnectionState("connected");
+        reconnectAttemptRef.current = 0;
       }
     };
   }, []);
 
-  // Create a viewer-initiated offer
+  // Create a viewer-initiated offer (proactive — doesn't wait for broadcaster)
   const createViewerOffer = useCallback(async (pc: RTCPeerConnection) => {
     try {
       const offer = await pc.createOffer({
@@ -208,13 +248,13 @@ export function useViewer() {
         offerToReceiveVideo: true,
       });
       await pc.setLocalDescription(offer);
-      
+
       // Send the offer to the server (which routes it to broadcaster)
       wsRef.current?.send(
         JSON.stringify({ type: "webrtc-offer", sdp: offer })
       );
       setConnectionState("connecting");
-      
+
       // Flush any buffered ICE candidates
       for (const candidate of iceCandidateBufferRef.current) {
         wsRef.current?.send(
@@ -222,20 +262,29 @@ export function useViewer() {
         );
       }
       iceCandidateBufferRef.current = [];
-      
+
       // Set a timeout to detect stalled connections
       if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current);
       connectionTimeoutRef.current = setTimeout(() => {
         if (pcRef.current && pcRef.current.connectionState !== 'connected' && !hasReceivedAnswerRef.current) {
-          console.log("[useViewer] Viewer-initiated offer stalled, waiting for broadcaster answer...");
+          console.log("[useViewer] Viewer-initiated offer stalled, retrying...");
+          // Retry by sending viewer-join again
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            cleanupPeerConnection();
+            const newPc = createPeerConnection();
+            setupTrackHandler(newPc);
+            createViewerOffer(newPc);
+          }
         }
-      }, 15000);
+      }, 10000);
     } catch (error) {
       console.error("[useViewer] Failed to create viewer offer:", error);
       isConnectingRef.current = false;
     }
-  }, []);
+  }, [createPeerConnection, cleanupPeerConnection, setupTrackHandler]);
 
+  // Stable message handler — does NOT depend on meta or any changing state
+  // All state reads use refs, all state writes use functional updates
   const handleMessage = useCallback(
     async (event: MessageEvent) => {
       let msg: any;
@@ -256,15 +305,17 @@ export function useViewer() {
 
         case "stream-update": {
           if (msg.session) {
-            const wasLive = meta.isLive;
+            const wasLive = metaRef.current?.isLive;
             const isNowLive = msg.session.isLive;
 
             if (!wasLive && isNowLive) {
-              if (Notification.permission === 'granted') {
-                new Notification("N.I.C.A. Kibugu is LIVE!", {
-                  body: `Join us now for: ${msg.session.title}`,
-                  icon: '/logo/logo.png'
-                });
+              if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+                try {
+                  new Notification("N.I.C.A. Kibugu is LIVE!", {
+                    body: `Join us now for: ${msg.session.title}`,
+                    icon: '/logo/logo.png'
+                  });
+                } catch (e) { /* ignore */ }
               }
             }
 
@@ -277,6 +328,15 @@ export function useViewer() {
               viewers: msg.session.viewers,
               startTime: msg.session.startTime,
             });
+
+            // If the stream just went live and we don't have a peer connection,
+            // proactively start the WebRTC handshake
+            if (isNowLive && !pcRef.current && !isConnectingRef.current) {
+              console.log('[useViewer] Stream is live, proactively starting WebRTC handshake');
+              const pc = createPeerConnection();
+              setupTrackHandler(pc);
+              createViewerOffer(pc);
+            }
           }
           break;
         }
@@ -300,8 +360,12 @@ export function useViewer() {
           // This is sent by the server when the broadcaster is notified about a new viewer.
           // If the broadcaster creates an offer for us, we'll receive it as a "webrtc-offer" message.
           // But to be safe, ALSO create our own offer (dual-mode for maximum compatibility).
+          if (isConnectingRef.current) {
+            console.log('[useViewer] Already connecting, skipping viewer-joined');
+            return;
+          }
           isConnectingRef.current = true;
-          
+
           cleanupPeerConnection();
           const pc = createPeerConnection();
           setupTrackHandler(pc);
@@ -309,51 +373,44 @@ export function useViewer() {
           // Create our own offer proactively (viewer-initiated mode)
           // This ensures we connect even if the broadcaster's offer is missed
           await createViewerOffer(pc);
-          
-          // Also set a timer: if we don't get an answer within 8 seconds,
-          // we know our viewer-initiated offer path is working (or we need to retry)
-          if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current);
-          connectionTimeoutRef.current = setTimeout(() => {
-            if (pcRef.current && pcRef.current.connectionState !== 'connected') {
-              console.log("[useViewer] No answer received after 8s, will retry on reconnect cycle");
-            }
-          }, 8000);
           break;
         }
 
         case "webrtc-offer": {
           // BROADCASTER-INITIATED: Broadcaster sent us an offer to answer
           isConnectingRef.current = true;
-          
-          // Use existing peer connection if available, otherwise create new
-          if (!pcRef.current) {
-            const pc = createPeerConnection();
-            setupTrackHandler(pc);
+
+          // If we already have a connection in progress, don't create a new one
+          // (this can happen with dual-mode — both sides try simultaneously)
+          if (pcRef.current && (pcRef.current.connectionState === 'connected' || pcRef.current.connectionState === 'connecting')) {
+            console.log('[useViewer] Already have active connection, ignoring broadcaster offer');
+            break;
           }
 
-          const offerPc = pcRef.current;
-          if (offerPc) {
-            try {
-              await offerPc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
-              const answer = await offerPc.createAnswer();
-              await offerPc.setLocalDescription(answer);
+          cleanupPeerConnection();
+          const pc = createPeerConnection();
+          setupTrackHandler(pc);
+
+          try {
+            await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            wsRef.current?.send(
+              JSON.stringify({ type: "webrtc-answer", sdp: answer })
+            );
+            setConnectionState("connecting");
+            console.log("[useViewer] Sent answer to broadcaster's offer");
+
+            // Flush buffered ICE candidates
+            for (const candidate of iceCandidateBufferRef.current) {
               wsRef.current?.send(
-                JSON.stringify({ type: "webrtc-answer", sdp: answer })
+                JSON.stringify({ type: "webrtc-ice-candidate", candidate })
               );
-              setConnectionState("connecting");
-              console.log("[useViewer] Sent answer to broadcaster's offer");
-              
-              // Flush buffered ICE candidates
-              for (const candidate of iceCandidateBufferRef.current) {
-                wsRef.current?.send(
-                  JSON.stringify({ type: "webrtc-ice-candidate", candidate })
-                );
-              }
-              iceCandidateBufferRef.current = [];
-            } catch (error) {
-              console.error("[useViewer] Failed to handle broadcaster offer:", error);
-              isConnectingRef.current = false;
             }
+            iceCandidateBufferRef.current = [];
+          } catch (error) {
+            console.error("[useViewer] Failed to handle broadcaster offer:", error);
+            isConnectingRef.current = false;
           }
           break;
         }
@@ -367,6 +424,16 @@ export function useViewer() {
               isConnectingRef.current = false;
               hasReceivedAnswerRef.current = true;
               console.log("[useViewer] Applied broadcaster's answer");
+
+              // Flush buffered ICE candidates
+              for (const candidate of iceCandidateBufferRef.current) {
+                try {
+                  await currentPc.addIceCandidate(new RTCIceCandidate(candidate));
+                } catch (e) {
+                  console.error('[useViewer] Failed to flush buffered ICE candidate:', e);
+                }
+              }
+              iceCandidateBufferRef.current = [];
             } catch (error) {
               console.error("[useViewer] Failed to set remote description:", error);
               isConnectingRef.current = false;
@@ -378,9 +445,17 @@ export function useViewer() {
         case "webrtc-ice-candidate": {
           if (pcRef.current && msg.candidate) {
             try {
-              await pcRef.current.addIceCandidate(new RTCIceCandidate(msg.candidate));
+              // Only add if remote description is set
+              if (pcRef.current.remoteDescription) {
+                await pcRef.current.addIceCandidate(new RTCIceCandidate(msg.candidate));
+              } else {
+                // Buffer until remote description is set
+                iceCandidateBufferRef.current.push(msg.candidate);
+              }
             } catch (error) {
               console.error("[useViewer] Failed to add ICE candidate:", error);
+              // Buffer for retry
+              iceCandidateBufferRef.current.push(msg.candidate);
             }
           } else if (msg.candidate) {
             // Buffer ICE candidates until peer connection is ready
@@ -431,59 +506,73 @@ export function useViewer() {
           break;
       }
     },
-    [meta.isLive, createPeerConnection, cleanupPeerConnection, setupTrackHandler, createViewerOffer]
+    [createPeerConnection, cleanupPeerConnection, setupTrackHandler, createViewerOffer]
   );
 
+  // WebSocket connection effect — STABLE: does NOT depend on any changing state
+  // This is the critical fix: the previous version had `handleMessage` depending on `meta.isLive`,
+  // which caused the WebSocket to be torn down and recreated every time the stream status changed,
+  // triggering `window.location.reload()` in the onclose handler.
   useEffect(() => {
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${protocol}//${window.location.host}/api/stream-sync`);
-    wsRef.current = ws;
+    let ws: WebSocket | null = null;
+    let isClosed = false;
 
-    ws.onopen = () => {
-      console.log("[useViewer] Connected to signaling server");
-      reconnectAttemptRef.current = 0;
-      ws.send(JSON.stringify({ type: "subscribe", role: "viewer" }));
-    };
+    const connect = () => {
+      if (isClosed) return;
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      ws = new WebSocket(`${protocol}//${window.location.host}/api/stream-sync`);
+      wsRef.current = ws;
 
-    ws.onmessage = handleMessage;
+      ws.onopen = () => {
+        console.log("[useViewer] Connected to signaling server");
+        wsReconnectAttemptRef.current = 0;
+        ws!.send(JSON.stringify({ type: "subscribe", role: "viewer" }));
+        setConnectionState(prev => prev === "connected" ? "connected" : "connecting");
+      };
 
-    ws.onclose = () => {
-      console.log("[useViewer] Disconnected from signaling server");
-      setConnectionState("disconnected");
-      setRemoteStream(null);
-      cleanupPeerConnection();
-      
-      // Auto-reconnect WebSocket with backoff
-      if (reconnectAttemptRef.current < maxReconnectAttempts) {
-        const delay = Math.min(2000 * Math.pow(1.5, reconnectAttemptRef.current), 20000);
-        reconnectAttemptRef.current++;
-        
-        console.log(`[useViewer] WebSocket will reconnect in ${delay}ms`);
-        
-        reconnectTimerRef.current = setTimeout(() => {
-          if (reconnectAttemptRef.current >= maxReconnectAttempts) {
-            console.log('[useViewer] Max WebSocket reconnect attempts reached');
-            return;
-          }
-          // Force re-navigation to re-init the hook
-          window.location.reload();
+      ws.onmessage = handleMessage;
+
+      ws.onclose = () => {
+        if (isClosed) return; // Component unmounted, don't reconnect
+        console.log("[useViewer] Disconnected from signaling server, will reconnect in background");
+        setConnectionState("reconnecting");
+        // DO NOT set remoteStream to null — keep the last frame visible
+        // DO NOT call window.location.reload() — reconnect silently in the background
+        cleanupPeerConnection();
+
+        // Auto-reconnect WebSocket with backoff — SILENTLY IN THE BACKGROUND
+        const delay = Math.min(1000 * Math.pow(1.5, Math.min(wsReconnectAttemptRef.current, 8)), 10000);
+        wsReconnectAttemptRef.current++;
+
+        console.log(`[useViewer] WebSocket will reconnect in ${delay}ms (attempt ${wsReconnectAttemptRef.current})`);
+
+        wsReconnectTimerRef.current = setTimeout(() => {
+          connect();
         }, delay);
-      }
+      };
+
+      ws.onerror = (error) => {
+        console.error("[useViewer] WebSocket error:", error);
+        // Don't change connectionState here — onclose will handle reconnection
+      };
     };
 
-    ws.onerror = (error) => {
-      console.error("[useViewer] WebSocket error:", error);
-      setConnectionState("disconnected");
-    };
+    connect();
 
     return () => {
+      isClosed = true;
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
+      }
+      if (wsReconnectTimerRef.current) {
+        clearTimeout(wsReconnectTimerRef.current);
       }
       if (connectionTimeoutRef.current) {
         clearTimeout(connectionTimeoutRef.current);
       }
-      ws.close();
+      if (ws) {
+        ws.close();
+      }
       cleanupPeerConnection();
     };
   }, [handleMessage, cleanupPeerConnection]);
@@ -501,11 +590,25 @@ export function useViewer() {
   // Manual reconnect function
   const reconnect = useCallback(() => {
     reconnectAttemptRef.current = 0;
+    wsReconnectAttemptRef.current = 0;
     cleanupPeerConnection();
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: "viewer-join" }));
+    } else {
+      // Force reconnect the WebSocket
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const ws = new WebSocket(`${protocol}//${window.location.host}/api/stream-sync`);
+      wsRef.current = ws;
+      ws.onopen = () => {
+        wsReconnectAttemptRef.current = 0;
+        ws.send(JSON.stringify({ type: "subscribe", role: "viewer" }));
+      };
+      ws.onmessage = handleMessage;
+      ws.onclose = () => {
+        setConnectionState("disconnected");
+      };
     }
-  }, [cleanupPeerConnection]);
+  }, [cleanupPeerConnection, handleMessage]);
 
   return {
     remoteStream,

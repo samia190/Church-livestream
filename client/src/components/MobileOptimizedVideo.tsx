@@ -24,7 +24,7 @@ export default function MobileOptimizedVideo({
   const [muted, setMuted] = useState(true);
   const [showControls, setShowControls] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [showReconnect, setShowReconnect] = useState(false);
+  const [needsTapToPlay, setNeedsTapToPlay] = useState(false);
   const hideControlsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Auto-hide controls after inactivity
@@ -64,34 +64,49 @@ export default function MobileOptimizedVideo({
     return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
   }, []);
 
-  // Connect stream to video element
+  // Connect stream to video element — with robust autoplay handling
   useEffect(() => {
     if (videoRef.current && stream) {
-      // Professional: Optimization for low-latency playback
       const video = videoRef.current;
       video.srcObject = stream;
-      
-      // Force low latency attributes
-      video.muted = true; // Required for autoplay
+
+      // Force low latency attributes for mobile
+      video.muted = muted; // Must be muted for autoplay
       video.autoplay = true;
       video.setAttribute('playsinline', 'true');
       video.setAttribute('webkit-playsinline', 'true');
-      
+      video.setAttribute('x5-playsinline', 'true');
+
       // Attempt immediate playback
       const playPromise = video.play();
       if (playPromise !== undefined) {
-        playPromise.catch(error => {
-          console.log("[Video] Autoplay prevented, waiting for interaction", error);
+        playPromise.then(() => {
+          // Playback started successfully
+          setNeedsTapToPlay(false);
+        }).catch(error => {
+          console.log("[Video] Autoplay prevented, showing tap-to-play overlay", error);
+          // Autoplay was prevented. Show a tap-to-play overlay.
+          // This is required for iOS Safari and some Android browsers.
+          setNeedsTapToPlay(true);
         });
       }
     }
-  }, [stream]);
+  }, [stream, muted]);
+
+  // Retry play when unmuted
+  useEffect(() => {
+    if (!needsTapToPlay && videoRef.current && stream) {
+      videoRef.current.play().catch(() => {});
+    }
+  }, [needsTapToPlay, stream]);
 
   const handleTap = () => {
     resetHideTimer();
     if (videoRef.current && stream) {
       if (videoRef.current.paused) {
-        videoRef.current.play();
+        videoRef.current.play().then(() => {
+          setNeedsTapToPlay(false);
+        }).catch(() => {});
       }
     }
   };
@@ -104,7 +119,6 @@ export default function MobileOptimizedVideo({
     setMuted(prev => {
       if (videoRef.current) {
         videoRef.current.muted = !prev;
-        // If unmute, also unmute the actual tracks
         if (!prev && stream) {
           stream.getAudioTracks().forEach(t => { t.enabled = true; });
         }
@@ -115,7 +129,6 @@ export default function MobileOptimizedVideo({
 
   const toggleFullscreen = async () => {
     if (!containerRef.current) return;
-    
     try {
       if (document.fullscreenElement) {
         await document.exitFullscreen();
@@ -170,7 +183,11 @@ export default function MobileOptimizedVideo({
     }
   };
 
-  const showOfflineState = (!isLive && broadcastMode === 'offline');
+  // Only show "No Stream Available" when truly offline (no session and no stream)
+  // During WebRTC negotiation (connecting/reconnecting), show a loading spinner instead
+  const showOfflineState = (!isLive && broadcastMode === 'offline' && !stream);
+  const showConnectingState = (isLive || broadcastMode !== 'offline') && !stream && 
+    (connectionState === 'connecting' || connectionState === 'reconnecting' || connectionState === 'disconnected');
 
   return (
     <div
@@ -181,7 +198,7 @@ export default function MobileOptimizedVideo({
       role="application"
       aria-label="Live Stream Video"
     >
-      {/* Video Element */}
+      {/* Video Element — always render when stream exists */}
       {stream ? (
         <video
           ref={videoRef}
@@ -197,7 +214,7 @@ export default function MobileOptimizedVideo({
         />
       ) : null}
 
-      {/* Offline / Loading State */}
+      {/* Offline State — only when truly no stream is active */}
       {showOfflineState && (
         <div className="absolute inset-0 bg-gradient-to-br from-slate-900 via-void to-void flex flex-col items-center justify-center gap-4 p-6">
           <div className="w-20 h-20 rounded-full bg-slate-800/50 flex items-center justify-center border border-slate-700/50">
@@ -211,12 +228,43 @@ export default function MobileOptimizedVideo({
         </div>
       )}
 
-      {/* Connection Lost State */}
-      {(connectionState === 'reconnecting' || connectionState === 'disconnected') && stream && (
+      {/* Connecting / Buffering State — shown during WebRTC handshake */}
+      {showConnectingState && (
+        <div className="absolute inset-0 bg-gradient-to-br from-slate-900 via-void to-void flex flex-col items-center justify-center gap-4 p-6">
+          <div className="w-16 h-16 rounded-full bg-slate-800/50 flex items-center justify-center border border-slate-700/50">
+            <Loader2 className="w-8 h-8 text-primary animate-spin" />
+          </div>
+          <div className="text-center">
+            <p className="text-white text-base font-bold">
+              {connectionState === 'reconnecting' ? 'Reconnecting...' : 'Connecting to stream...'}
+            </p>
+            <p className="text-slate-400 text-sm mt-1">
+              {broadcastMode === 'pre-stream' ? 'Preparing pre-stream media' : 'Setting up live connection'}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Tap to Play Overlay — for iOS Safari autoplay restriction */}
+      {needsTapToPlay && stream && (
+        <div 
+          className="absolute inset-0 bg-black/60 backdrop-blur-sm flex flex-col items-center justify-center gap-4 z-40 cursor-pointer"
+          onClick={(e) => { e.stopPropagation(); handleTap(); }}
+        >
+          <div className="w-20 h-20 rounded-full bg-primary/80 flex items-center justify-center border-2 border-primary/30 shadow-lg">
+            <Play className="w-10 h-10 text-white ml-1" />
+          </div>
+          <p className="text-white text-base font-bold">Tap to watch live</p>
+          <p className="text-slate-400 text-xs">Tap once to start streaming</p>
+        </div>
+      )}
+
+      {/* Connection Lost State — only show when we HAD a stream but lost it */}
+      {(connectionState === 'reconnecting' || connectionState === 'disconnected') && stream && !needsTapToPlay && (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          className="absolute inset-0 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center gap-4 z-30"
+          className="absolute inset-0 bg-black/70 backdrop-blur-sm flex flex-col items-center justify-center gap-4 z-30"
         >
           <div className="w-16 h-16 rounded-full bg-slate-800/80 flex items-center justify-center border border-slate-700/50">
             {connectionState === 'reconnecting' ? (
@@ -242,7 +290,7 @@ export default function MobileOptimizedVideo({
         </motion.div>
       )}
 
-      {/* Live Indicator - always visible */}
+      {/* Live Indicator - always visible when live */}
       {isLive && (
         <div className="absolute top-3 left-3 z-20 flex items-center gap-1.5 bg-red-600/90 backdrop-blur-md px-2.5 py-1 rounded-full">
           <div className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
@@ -251,7 +299,7 @@ export default function MobileOptimizedVideo({
       )}
 
       {/* Controls Overlay */}
-      {stream && !showOfflineState && (
+      {stream && !showOfflineState && !showConnectingState && !needsTapToPlay && (
         <AnimatePresence>
           {showControls && (
             <motion.div
