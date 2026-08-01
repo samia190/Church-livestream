@@ -286,6 +286,8 @@ export const ModernLiveStudio: React.FC = () => {
    * Professional: Mixer handles all audio logic internally via gain nodes.
    * We just show a toast for feedback.
    */
+  const [monitorMuted, setMonitorMuted] = useState(false);
+
   const handleMixerMuteChange = useCallback((trackId: string, muted: boolean) => {
     toast.success(`${trackId} ${muted ? 'muted' : 'unmuted'}`);
   }, []);
@@ -317,6 +319,11 @@ export const ModernLiveStudio: React.FC = () => {
       }
     }
   }, [isLive, activeOverlayStream, camera.stream, replaceStream]);
+
+  const handleMonitorMuteChange = useCallback((muted: boolean) => {
+    setMonitorMuted(muted);
+    toast.info(muted ? 'Monitor muted — viewers still hear full audio' : 'Monitor unmuted — you hear the processed audio');
+  }, []);
 
   const handleShare = async () => {
     const url = `${window.location.origin}/watch-live`;
@@ -535,6 +542,8 @@ export const ModernLiveStudio: React.FC = () => {
                  mediaStream={stream}
                  onVolumeChange={handleMixerVolumeChange}
                  onMuteChange={handleMixerMuteChange}
+                 onProcessedStream={handleMixerProcessedStream}
+                 onMonitorMuteChange={handleMonitorMuteChange}
                />
              </div>
           </div>

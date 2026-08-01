@@ -1,5 +1,34 @@
+/**
+ * MobileOptimizedVideo.tsx
+ *
+ * ============================================================
+ * VIEWER-SIDE AUDIO BOOST PIPELINE
+ * ============================================================
+ *
+ * PROBLEM: WebRTC audio arrived at raw browser gain level.
+ * VIEWERS experienced very low volume even at device max.
+ *
+ * FIX: Route incoming audio track through Web Audio API:
+ *
+ *   WebRTC Audio Track → MediaStreamSource → GainNode(2.0x) → ctx.destination
+ *
+ *   - Video element stays muted=true (required for autoplay on mobile)
+ *   - Audio is played through Web Audio API at boosted gain
+ *   - Viewers get a volume slider (0% – 400%) to control their own level
+ *   - Smooth gain transitions via setTargetAtTime (no clicks/pops)
+ *   - Gain defaults to 200% (2.0x) to fix the low-volume issue
+ *
+ * HOW IT WORKS:
+ *   1. When a WebRTC stream arrives, extract the audio track
+ *   2. Create a MediaStreamSource from the track
+ *   3. Connect through a GainNode set to 2.0 (200%) by default
+ *   4. Output to AudioContext.destination (browser speakers)
+ *   5. The video element remains muted so autoplay works
+ *   6. Unmute = toggle the Web Audio API gain, NOT the video element
+ */
+
 import { useRef, useState, useEffect, useCallback } from 'react';
-import { Play, Pause, Volume2, VolumeX, Maximize, Minimize, Loader2, Wifi, WifiOff, RefreshCw } from 'lucide-react';
+import { Play, Pause, Volume2, VolumeX, Maximize, Minimize, Loader2, Wifi, WifiOff, RefreshCw, Volume } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 interface MobileOptimizedVideoProps {
@@ -27,7 +56,105 @@ export default function MobileOptimizedVideo({
   const [needsTapToPlay, setNeedsTapToPlay] = useState(false);
   const hideControlsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Auto-hide controls after inactivity
+  // ── Web Audio API for Viewer Audio Boost ──────────────────────────────────
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const gainNodeRef = useRef<GainNode | null>(null);
+  const [volumeLevel, setVolumeLevel] = useState(200); // Default 200% (2.0x)
+  const isAudioGraphConnectedRef = useRef(false);
+
+  /**
+   * Initialize Web Audio API graph for viewer audio boost.
+   * Creates: MediaStreamSource → GainNode → AudioContext.destination
+   */
+  const initAudioBoost = useCallback(() => {
+    if (!audioContextRef.current) {
+      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+    }
+
+    const ctx = audioContextRef.current!;
+
+    // Resume context if suspended (browser policy)
+    if (ctx.state === 'suspended') {
+      ctx.resume();
+    }
+
+    if (!gainNodeRef.current) {
+      gainNodeRef.current = ctx.createGain();
+      // Default gain of 2.0 = 200% volume boost
+      gainNodeRef.current.gain.value = volumeLevel / 100;
+    }
+
+    return { ctx, gain: gainNodeRef.current };
+  }, [volumeLevel]);
+
+  /**
+   * Connect incoming WebRTC audio track to the Web Audio API boost pipeline.
+   */
+  const connectAudioBoost = useCallback(() => {
+    if (!stream) return;
+
+    const audioTrack = stream.getAudioTracks()[0];
+    if (!audioTrack) {
+      console.log("[Video] No audio track in stream");
+      return;
+    }
+
+    const { ctx, gain } = initAudioBoost();
+
+    // Disconnect old source if exists
+    if (sourceNodeRef.current) {
+      try { sourceNodeRef.current.disconnect(); } catch (e) {}
+    }
+
+    try {
+      // Create source from the WebRTC audio track
+      const source = ctx.createMediaStreamSource(new MediaStream([audioTrack]));
+      sourceNodeRef.current = source;
+
+      // Wire: source → gain → destination
+      source.connect(gain);
+      gain.connect(ctx.destination);
+
+      isAudioGraphConnectedRef.current = true;
+      console.log(`[Video] Audio boost connected at ${volumeLevel}% gain`);
+    } catch (err) {
+      console.error("[Video] Audio boost connection failed:", err);
+    }
+  }, [stream, initAudioBoost, volumeLevel]);
+
+  // Disconnect audio boost when stream changes or unmounts
+  const disconnectAudioBoost = useCallback(() => {
+    if (sourceNodeRef.current) {
+      try { sourceNodeRef.current.disconnect(); } catch (e) {}
+    }
+    isAudioGraphConnectedRef.current = false;
+  }, []);
+
+  // Connect audio boost when stream arrives
+  useEffect(() => {
+    if (stream) {
+      // Small delay to ensure the stream is fully initialized
+      const timer = setTimeout(() => {
+        connectAudioBoost();
+      }, 300);
+      return () => clearTimeout(timer);
+    } else {
+      disconnectAudioBoost();
+    }
+  }, [stream, connectAudioBoost, disconnectAudioBoost]);
+
+  // Update gain when volume level changes
+  useEffect(() => {
+    if (gainNodeRef.current && audioContextRef.current) {
+      const targetGain = muted ? 0 : volumeLevel / 100;
+      const now = audioContextRef.current.currentTime;
+      // Smooth transition to avoid clicks/pops
+      gainNodeRef.current.gain.setTargetAtTime(targetGain, now, 0.05);
+    }
+  }, [volumeLevel, muted]);
+
+  // ── Auto-hide controls after inactivity ───────────────────────────────────
   const resetHideTimer = useCallback(() => {
     setShowControls(true);
     if (hideControlsTimer.current) {
@@ -40,7 +167,7 @@ export default function MobileOptimizedVideo({
     }, 4000);
   }, [isFullscreen]);
 
-  // Show controls when video is playing
+  // ── Show controls when video is playing ───────────────────────────────────
   useEffect(() => {
     if (stream) {
       setShowControls(true);
@@ -55,7 +182,7 @@ export default function MobileOptimizedVideo({
     };
   }, [stream]);
 
-  // Handle fullscreen changes
+  // ── Handle fullscreen changes ─────────────────────────────────────────────
   useEffect(() => {
     const handleFullscreenChange = () => {
       setIsFullscreen(!!document.fullscreenElement);
@@ -64,14 +191,15 @@ export default function MobileOptimizedVideo({
     return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
   }, []);
 
-  // Connect stream to video element — with robust autoplay handling
+  // ── Connect stream to video element — with robust autoplay handling ───────
   useEffect(() => {
     if (videoRef.current && stream) {
       const video = videoRef.current;
       video.srcObject = stream;
 
-      // Force low latency attributes for mobile
-      video.muted = muted; // Must be muted for autoplay
+      // Video MUST stay muted for browser autoplay policy
+      // Audio is handled separately through Web Audio API gain pipeline
+      video.muted = true;
       video.autoplay = true;
       video.setAttribute('playsinline', 'true');
       video.setAttribute('webkit-playsinline', 'true');
@@ -81,19 +209,16 @@ export default function MobileOptimizedVideo({
       const playPromise = video.play();
       if (playPromise !== undefined) {
         playPromise.then(() => {
-          // Playback started successfully
           setNeedsTapToPlay(false);
         }).catch(error => {
           console.log("[Video] Autoplay prevented, showing tap-to-play overlay", error);
-          // Autoplay was prevented. Show a tap-to-play overlay.
-          // This is required for iOS Safari and some Android browsers.
           setNeedsTapToPlay(true);
         });
       }
     }
-  }, [stream, muted]);
+  }, [stream]);
 
-  // Retry play when unmuted
+  // ── Retry play when needed ────────────────────────────────────────────────
   useEffect(() => {
     if (!needsTapToPlay && videoRef.current && stream) {
       videoRef.current.play().catch(() => {});
@@ -115,17 +240,29 @@ export default function MobileOptimizedVideo({
     toggleFullscreen();
   }, []);
 
+  /**
+   * Toggle mute/unmute.
+   * This controls the Web Audio API GainNode, NOT the video element.
+   * The video stays muted (autoplay policy) but audio flows through the gain node.
+   */
   const toggleMute = () => {
     setMuted(prev => {
-      if (videoRef.current) {
-        videoRef.current.muted = !prev;
-        if (!prev && stream) {
-          stream.getAudioTracks().forEach(t => { t.enabled = true; });
-        }
+      const newMuted = !prev;
+      // Resume AudioContext if needed (browser requires user gesture)
+      if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
+        audioContextRef.current.resume();
       }
-      return !prev;
+      return newMuted;
     });
   };
+
+  /**
+   * Handle volume slider change (0% – 400%).
+   * Updates the Web Audio API GainNode gain value.
+   */
+  const handleVolumeChange = useCallback((value: number) => {
+    setVolumeLevel(value);
+  }, []);
 
   const toggleFullscreen = async () => {
     if (!containerRef.current) return;
@@ -183,8 +320,7 @@ export default function MobileOptimizedVideo({
     }
   };
 
-  // Only show "No Stream Available" when truly offline (no session and no stream)
-  // During WebRTC negotiation (connecting/reconnecting), show a loading spinner instead
+  // ── Offline / Connecting states ───────────────────────────────────────────
   const showOfflineState = (!isLive && broadcastMode === 'offline' && !stream);
   const showConnectingState = (isLive || broadcastMode !== 'offline') && !stream && 
     (connectionState === 'connecting' || connectionState === 'reconnecting' || connectionState === 'disconnected');
@@ -198,13 +334,13 @@ export default function MobileOptimizedVideo({
       role="application"
       aria-label="Live Stream Video"
     >
-      {/* Video Element — always render when stream exists */}
+      {/* Video Element — stays muted for autoplay, audio via Web Audio API */}
       {stream ? (
         <video
           ref={videoRef}
           autoPlay
           playsInline
-          muted={muted}
+          muted
           className="absolute inset-0 w-full h-full object-contain"
           webkit-playsinline=""
           x5-playsinline=""
@@ -214,7 +350,7 @@ export default function MobileOptimizedVideo({
         />
       ) : null}
 
-      {/* Offline State — only when truly no stream is active */}
+      {/* Offline State */}
       {showOfflineState && (
         <div className="absolute inset-0 bg-gradient-to-br from-slate-900 via-void to-void flex flex-col items-center justify-center gap-4 p-6">
           <div className="w-20 h-20 rounded-full bg-slate-800/50 flex items-center justify-center border border-slate-700/50">
@@ -228,7 +364,7 @@ export default function MobileOptimizedVideo({
         </div>
       )}
 
-      {/* Connecting / Buffering State — shown during WebRTC handshake */}
+      {/* Connecting / Buffering State */}
       {showConnectingState && (
         <div className="absolute inset-0 bg-gradient-to-br from-slate-900 via-void to-void flex flex-col items-center justify-center gap-4 p-6">
           <div className="w-16 h-16 rounded-full bg-slate-800/50 flex items-center justify-center border border-slate-700/50">
@@ -259,7 +395,7 @@ export default function MobileOptimizedVideo({
         </div>
       )}
 
-      {/* Connection Lost State — only show when we HAD a stream but lost it */}
+      {/* Connection Lost State */}
       {(connectionState === 'reconnecting' || connectionState === 'disconnected') && stream && !needsTapToPlay && (
         <motion.div
           initial={{ opacity: 0 }}
@@ -290,11 +426,19 @@ export default function MobileOptimizedVideo({
         </motion.div>
       )}
 
-      {/* Live Indicator - always visible when live */}
+      {/* Live Indicator */}
       {isLive && (
         <div className="absolute top-3 left-3 z-20 flex items-center gap-1.5 bg-red-600/90 backdrop-blur-md px-2.5 py-1 rounded-full">
           <div className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
           <span className="text-white font-black text-[9px] tracking-[0.15em] uppercase">LIVE</span>
+        </div>
+      )}
+
+      {/* Audio Boost Indicator (subtle) */}
+      {!muted && volumeLevel > 100 && (
+        <div className="absolute top-3 right-14 z-20 flex items-center gap-1 bg-blue-600/80 backdrop-blur-md px-2 py-0.5 rounded-full">
+          <Volume className="w-2.5 h-2.5 text-white" />
+          <span className="text-white font-bold text-[8px]">{volumeLevel}%</span>
         </div>
       )}
 
@@ -324,6 +468,33 @@ export default function MobileOptimizedVideo({
 
               {/* Bottom Controls */}
               <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-3 pb-10 sm:pb-3 pointer-events-auto">
+
+                {/* Volume Slider Row */}
+                {!muted && (
+                  <div className="mb-3 px-2">
+                    <div className="flex items-center gap-3 bg-black/40 backdrop-blur-md rounded-full px-3 py-2">
+                      <Volume className="w-3.5 h-3.5 text-white/70" />
+                      <input
+                        type="range"
+                        min={0}
+                        max={400}
+                        step={5}
+                        value={volumeLevel}
+                        onChange={(e) => handleVolumeChange(Number(e.target.value))}
+                        onClick={(e) => e.stopPropagation()}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onTouchStart={(e) => e.stopPropagation()}
+                        className="flex-1 h-1.5 bg-white/20 rounded-full appearance-none cursor-pointer
+                          [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4
+                          [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:shadow-lg
+                          [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:rounded-full
+                          [&::-moz-range-thumb]:bg-primary [&::-moz-range-thumb]:border-0"
+                      />
+                      <span className="text-[10px] font-mono text-white/80 w-9 text-right">{volumeLevel}%</span>
+                    </div>
+                  </div>
+                )}
+
                 <div className="flex items-center justify-between">
                   {/* Left: Mute */}
                   <button
