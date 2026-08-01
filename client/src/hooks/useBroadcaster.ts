@@ -1,12 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 // Professional WebRTC Infrastructure
+// STUN servers for NAT discovery + redundant sources
+// Mobile devices on carrier networks (CGNAT) need TURN relay as fallback
 const ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
   { urls: "stun:stun2.l.google.com:19302" },
+  { urls: "stun:stun3.l.google.com:19302" },
+  { urls: "stun:stun4.l.google.com:19302" },
   { urls: "stun:stun.services.mozilla.com" },
   { urls: "stun:stun.cloudflare.com:3478" },
+  { urls: "stun:openrelay.metered.ca:80" },
+  { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
+  { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
+  { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" },
 ];
 
 interface StartBroadcastArgs {
@@ -24,6 +32,7 @@ export type BroadcastMode = "offline" | "pre-stream" | "live";
 export function useBroadcaster() {
   const wsRef = useRef<WebSocket | null>(null);
   const peersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const iceCandidateBuffersRef = useRef<Map<string, any[]>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
   const originalCameraStreamRef = useRef<MediaStream | null>(null);
   const [connected, setConnected] = useState(false);
@@ -111,10 +120,13 @@ export function useBroadcaster() {
 
     pc.onicecandidate = event => {
       if (event.candidate && wsRef.current?.readyState === WebSocket.OPEN) {
+        // Send ICE candidates with both targetViewerId (for server routing to viewer) 
+        // and viewerId (for server routing to broadcaster when viewer is offerer)
         wsRef.current.send(
           JSON.stringify({
             type: "webrtc-ice-candidate",
             targetViewerId: viewerId,
+            viewerId: viewerId,
             candidate: event.candidate,
           })
         );
@@ -147,7 +159,19 @@ export function useBroadcaster() {
 
   const sendOfferToViewer = useCallback(
     async (viewerId: string) => {
+      // If we already have a peer connection for this viewer (e.g. from a viewer-initiated offer),
+      // don't create a new one - the viewer-initiated flow is already in progress
+      const existingPc = peersRef.current.get(viewerId);
+      if (existingPc) {
+        // If the connection is already established or connecting, skip
+        if (['connected', 'connecting', 'new'].includes(existingPc.connectionState)) {
+          console.log(`[useBroadcaster] Viewer ${viewerId} already has active connection, skipping broadcaster offer`);
+          return;
+        }
+      }
+      
       const pc = createPeerForViewer(viewerId);
+      
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       wsRef.current?.send(
@@ -155,6 +179,57 @@ export function useBroadcaster() {
       );
     },
     [createPeerForViewer]
+  );
+
+  // Handle a viewer-initiated offer (viewer creates offer, broadcaster answers)
+  const handleViewerOffer = useCallback(
+    async (viewerId: string, sdp: RTCSessionDescriptionInit) => {
+      console.log(`[useBroadcaster] Received viewer-initiated offer from ${viewerId}`);
+      const pc = createPeerForViewer(viewerId);
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        wsRef.current?.send(
+          JSON.stringify({ type: "webrtc-answer", targetViewerId: viewerId, sdp: answer })
+        );
+        
+        // Flush buffered ICE candidates and answers for this viewer
+        const buf = iceCandidateBuffersRef.current.get(viewerId);
+        if (buf && buf.length > 0) {
+          for (const item of buf) {
+            try {
+              if (item.type === 'answer') {
+                // Apply buffered answer
+                await pc.setRemoteDescription(new RTCSessionDescription(item.sdp));
+              } else {
+                await pc.addIceCandidate(new RTCIceCandidate(item));
+              }
+            } catch (err) {
+              console.error(`[useBroadcaster] Failed to apply buffered item for ${viewerId}:`, err);
+            }
+          }
+          iceCandidateBuffersRef.current.delete(viewerId);
+        }
+      } catch (error) {
+        console.error(`[useBroadcaster] Failed to handle viewer offer from ${viewerId}:`, error);
+        peersRef.current.delete(viewerId);
+        iceCandidateBuffersRef.current.delete(viewerId);
+        pc.close();
+      }
+    },
+    [createPeerForViewer]
+  );
+
+  // Handle answer from a viewer to our offer (targeted by viewerId)
+  const handleViewerAnswer = useCallback(
+    async (viewerId: string, sdp: RTCSessionDescriptionInit) => {
+      const pc = peersRef.current.get(viewerId);
+      if (pc) {
+        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+      }
+    },
+    []
   );
 
   const [chatMessages, setChatMessages] = useState<any[]>([]);
@@ -173,17 +248,62 @@ export function useBroadcaster() {
           await sendOfferToViewer(msg.viewerId);
           break;
         case "webrtc-answer": {
-          const pc = peersRef.current.get(msg.viewerId);
-          if (pc) await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+          // Answer from viewer to our offer (server routes it with viewerId)
+          // Also handle targeted answer from server (targetViewerId)
+          const answerViewerId = msg.viewerId || msg.targetViewerId;
+          if (answerViewerId && msg.sdp) {
+            const pc = peersRef.current.get(answerViewerId);
+            if (pc) {
+              await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+              console.log(`[useBroadcaster] Applied answer from viewer ${answerViewerId}`);
+            } else {
+              // Buffer for later if peer connection not yet created
+              const buf = iceCandidateBuffersRef.current.get(answerViewerId) || [];
+              buf.push({ type: 'answer', sdp: msg.sdp });
+              iceCandidateBuffersRef.current.set(answerViewerId, buf);
+            }
+          }
+          break;
+        }
+        case "webrtc-offer": {
+          // Viewer-initiated offer: broadcaster answers it (server routes with viewerId)
+          if (msg.viewerId && msg.sdp) {
+            await handleViewerOffer(msg.viewerId, msg.sdp);
+          }
+          // Also handle targeted offer from server (targetViewerId - when server routes to a viewer)
+          // This shouldn't happen on broadcaster side but handle gracefully
           break;
         }
         case "webrtc-ice-candidate": {
-          const pc = peersRef.current.get(msg.viewerId);
-          if (pc && msg.candidate) {
-            try {
-              await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
-            } catch (err) {
-              console.error("[useBroadcaster] Failed to add ICE candidate", err);
+          // Handle ICE candidates from viewers (identified by viewerId or targetViewerId)
+          const viewerId = msg.viewerId || msg.targetViewerId;
+          if (viewerId && msg.candidate) {
+            const pc = peersRef.current.get(viewerId);
+            if (pc) {
+              try {
+                await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+              } catch (err) {
+                console.error("[useBroadcaster] Failed to add ICE candidate", err);
+              }
+            } else {
+              // Buffer ICE candidates until peer connection is created
+              const buf = iceCandidateBuffersRef.current.get(viewerId) || [];
+              buf.push(msg.candidate);
+              iceCandidateBuffersRef.current.set(viewerId, buf);
+            }
+          }
+          // If this is a targeted ICE candidate from server (targetViewerId) meant for a viewer,
+          // forward it to that viewer via WebSocket
+          if (msg.targetViewerId && !msg.viewerId && msg.candidate) {
+            // This is broadcaster's own ICE candidate being routed back - skip
+            console.log(`[useBroadcaster] ICE candidate for targetViewerId ${msg.targetViewerId}, checking...`);
+            const targetPc = peersRef.current.get(msg.targetViewerId);
+            if (targetPc) {
+              try {
+                await targetPc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+              } catch (err) {
+                console.error("[useBroadcaster] Failed to add targeted ICE candidate", err);
+              }
             }
           }
           break;
@@ -194,6 +314,7 @@ export function useBroadcaster() {
             pc.close();
             peersRef.current.delete(msg.viewerId);
           }
+          iceCandidateBuffersRef.current.delete(msg.viewerId);
           break;
         }
         case "viewer-count-update":
@@ -215,7 +336,7 @@ export function useBroadcaster() {
           break;
       }
     },
-    [sendOfferToViewer]
+    [sendOfferToViewer, handleViewerOffer, handleViewerAnswer, iceCandidateBuffersRef]
   );
 
   const sendChatMessage = useCallback((message: string, user: string = "Admin") => {

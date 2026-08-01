@@ -182,6 +182,18 @@ export function attachSignalingServer(server: HttpServer) {
 
           broadcastToViewers(currentStreamUpdatePayload());
           console.log(`[Signaling] Stream started in ${broadcastMode} mode`);
+
+          // NOTIFY ALL CONNECTED VIEWERS: When stream goes live, trigger join for all waiting viewers
+          if (broadcastMode !== "offline") {
+            for (const [viewerId, viewerEntry] of viewers.entries()) {
+              if (broadcaster) {
+                safeSend(broadcaster.ws, { type: "viewer-joined", viewerId });
+              }
+              // Also send viewer-join to the viewer so they can create their own offer
+              safeSend(viewerEntry.ws, { type: "viewer-joined" });
+            }
+            console.log(`[Signaling] Notified ${viewers.size} viewers about live stream`);
+          }
           break;
         }
 
@@ -198,6 +210,15 @@ export function attachSignalingServer(server: HttpServer) {
           const newMode: BroadcastMode = msg.broadcastMode;
           if (currentSession && newMode !== currentSession.broadcastMode) {
             broadcastModeChange(newMode);
+
+            // When switching TO live, notify all viewers to join
+            if (newMode !== "offline" && broadcaster) {
+              for (const [viewerId, viewerEntry] of viewers.entries()) {
+                safeSend(broadcaster.ws, { type: "viewer-joined", viewerId });
+                safeSend(viewerEntry.ws, { type: "viewer-joined" });
+              }
+              console.log(`[Signaling] Mode changed to ${newMode}, notified ${viewers.size} viewers`);
+            }
           }
           break;
         }
@@ -211,34 +232,57 @@ export function attachSignalingServer(server: HttpServer) {
         }
 
         case "webrtc-offer": {
-          if (!entry || entry.role !== "admin") return;
-          const target = viewers.get(msg.targetViewerId);
-          if (target) {
-            safeSend(target.ws, { type: "webrtc-offer", sdp: msg.sdp });
+          // Accept offers from both admin (targeted to specific viewer) and from viewers (viewer-initiated offer)
+          if (entry && entry.role === "admin" && msg.targetViewerId) {
+            // Admin sending offer to a specific viewer
+            const target = viewers.get(msg.targetViewerId);
+            if (target) {
+              safeSend(target.ws, { type: "webrtc-offer", sdp: msg.sdp });
+            }
+          } else if (entry && entry.role === "viewer") {
+            // Viewer-initiated offer: forward to broadcaster so they can answer
+            if (broadcaster) {
+              safeSend(broadcaster.ws, {
+                type: "webrtc-offer",
+                viewerId: entry.viewerId,
+                sdp: msg.sdp,
+              });
+            }
           }
           break;
         }
 
         case "webrtc-answer": {
-          if (!entry || entry.role !== "viewer" || !entry.viewerId) return;
-          if (broadcaster) {
-            safeSend(broadcaster.ws, {
-              type: "webrtc-answer",
-              viewerId: entry.viewerId,
-              sdp: msg.sdp,
-            });
+          // Accept answers from both viewers (to broadcaster) and admin (targeted to viewer)
+          if (entry && entry.role === "viewer" && entry.viewerId) {
+            // Viewer sending answer to broadcaster
+            if (broadcaster) {
+              safeSend(broadcaster.ws, {
+                type: "webrtc-answer",
+                viewerId: entry.viewerId,
+                sdp: msg.sdp,
+              });
+            }
+          } else if (entry && entry.role === "admin" && msg.targetViewerId) {
+            // Admin sending answer to specific viewer (for viewer-initiated offers)
+            const target = viewers.get(msg.targetViewerId);
+            if (target) {
+              safeSend(target.ws, { type: "webrtc-answer", sdp: msg.sdp });
+            }
           }
           break;
         }
 
         case "webrtc-ice-candidate": {
           if (!entry) return;
-          if (entry.role === "admin") {
+          if (entry.role === "admin" && msg.targetViewerId) {
+            // Admin sending ICE candidate to specific viewer
             const target = viewers.get(msg.targetViewerId);
             if (target) {
               safeSend(target.ws, { type: "webrtc-ice-candidate", candidate: msg.candidate });
             }
           } else if (entry.viewerId && broadcaster) {
+            // Viewer sending ICE candidate to broadcaster
             safeSend(broadcaster.ws, {
               type: "webrtc-ice-candidate",
               viewerId: entry.viewerId,
