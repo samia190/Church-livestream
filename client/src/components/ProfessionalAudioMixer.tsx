@@ -84,7 +84,7 @@ import {
   Zap, Settings, Info, Radio, Shield, Power,
   AudioLines, Circle, Download, Save, FolderOpen,
   BarChart3, CircleDot, Palette, ChevronDown, ChevronUp,
-  RotateCcw, Copy, RefreshCw, Lock, Unlock
+  RotateCcw, Copy, RefreshCw, Lock, Unlock, Plus
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
@@ -398,14 +398,19 @@ const ProfessionalAudioMixer = forwardRef<AudioMixerRef, ProfessionalAudioMixerP
     /* ── Initialize Audio Context & Full Processing Chain ──────────────────── */
 
     const initAudioContext = useCallback(async () => {
-      if (audioContextRef.current) {
-        if (audioContextRef.current.state === "suspended") {
-          await audioContextRef.current.resume();
+      console.log("[AudioMixer] Initializing AudioContext...");
+      try {
+        if (audioContextRef.current) {
+          console.log("[AudioMixer] AudioContext already exists, state:", audioContextRef.current.state);
+          if (audioContextRef.current.state === "suspended") {
+            await audioContextRef.current.resume();
+          }
+          setGraphInitialized(true);
+          return audioContextRef.current;
         }
-        return audioContextRef.current;
-      }
 
-      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 48000 });
+        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 48000 });
+        console.log("[AudioMixer] New AudioContext created, state:", ctx.state);
       if (ctx.state === "suspended") {
         await ctx.resume();
       }
@@ -675,8 +680,15 @@ const ProfessionalAudioMixer = forwardRef<AudioMixerRef, ProfessionalAudioMixerP
       }
 
       setGraphInitialized(true);
+      console.log("[AudioMixer] Audio graph initialized successfully");
+      toast.success("Professional Audio Studio Active");
       return ctx;
-    }, []); // Intentionally empty — initialize once
+    } catch (err) {
+      console.error("[AudioMixer] Failed to initialize audio graph:", err);
+      toast.error("Failed to start Audio Studio. Please try again.");
+      return null;
+    }
+    }, [onProcessedStream]); // Simplified dependencies to avoid unnecessary recreations; useEffects handle live updates
 
     /* ── Load Auto-Tune AudioWorklet Processor ─────────────────────────────── */
     const loadAutoTune = useCallback(async () => {
@@ -1517,6 +1529,7 @@ const ProfessionalAudioMixer = forwardRef<AudioMixerRef, ProfessionalAudioMixerP
     /* ── Expose ref methods ────────────────────────────────────────────────── */
     useImperativeHandle(ref, () => ({
       initAudioContext: async () => {
+        console.log("[AudioMixer] Imperative initAudioContext called, graphInitialized:", graphInitialized);
         if (!graphInitialized) {
           await initAudioContext();
           return true;
@@ -1526,7 +1539,6 @@ const ProfessionalAudioMixer = forwardRef<AudioMixerRef, ProfessionalAudioMixerP
       getProcessedStream: () => destinationRef.current?.stream || null,
       getAudioContext: () => audioContextRef.current,
       registerSource: (sourceId: string, stream: MediaStream | null) => {
-        // This allows external components to register/unregister audio sources
         if (sourceId === "preStream" && stream) {
           // Already handled by preStreamAudioStream prop
         }
@@ -1536,7 +1548,7 @@ const ProfessionalAudioMixer = forwardRef<AudioMixerRef, ProfessionalAudioMixerP
         onMicrophoneSwitch?.(newStream);
         return newStream;
       },
-    }));
+    }), [graphInitialized, initAudioContext, switchMicrophoneDevice, onMicrophoneSwitch]);
 
     /* ── Tab Configuration ─────────────────────────────────────────────────── */
     const tabs = useMemo(() => [
@@ -1550,7 +1562,7 @@ const ProfessionalAudioMixer = forwardRef<AudioMixerRef, ProfessionalAudioMixerP
     /* ─── RENDER ───────────────────────────────────────────────────────────── */
 
     return (
-      <Card className="bg-slate-950 border-slate-800 shadow-2xl overflow-hidden flex flex-col h-full border-2">
+      <Card className="relative bg-slate-950 border-slate-800 shadow-2xl overflow-hidden flex flex-col h-full border-2">
 
         {/* ── Header ──────────────────────────────────────────────────── */}
         <div className="bg-slate-900/80 p-4 border-b border-slate-800 flex items-center justify-between">
@@ -1576,7 +1588,7 @@ const ProfessionalAudioMixer = forwardRef<AudioMixerRef, ProfessionalAudioMixerP
                 variant="default"
                 size="sm"
                 className="h-8 text-[10px] font-bold uppercase gap-2 bg-amber-600 hover:bg-amber-700 text-white animate-pulse"
-                onClick={initAudioContext}
+                onClick={() => initAudioContext()}
               >
                 <Power className="w-3 h-3" />
                 Start Audio Studio
@@ -1645,7 +1657,7 @@ const ProfessionalAudioMixer = forwardRef<AudioMixerRef, ProfessionalAudioMixerP
             <Button 
               size="lg" 
               className="bg-primary hover:bg-primary/90 text-white font-black uppercase italic tracking-widest px-8 py-6 rounded-2xl shadow-xl shadow-primary/20 transition-all hover:-translate-y-1 active:translate-y-0"
-              onClick={initAudioContext}
+              onClick={() => initAudioContext()}
             >
               <Power className="w-5 h-5 mr-2" />
               Start Audio Studio
