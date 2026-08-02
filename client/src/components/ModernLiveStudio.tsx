@@ -163,6 +163,11 @@ export const ModernLiveStudio: React.FC = () => {
     }
 
     try {
+      // Initialize the professional audio engine (requires user gesture)
+      if (mixerRef.current) {
+        mixerRef.current.initAudioContext();
+      }
+
       const result = await goLiveMutation({
         title: streamTitle,
         description: streamDescription,
@@ -220,6 +225,12 @@ export const ModernLiveStudio: React.FC = () => {
    */
   const handleShowMediaToViewers = async () => {
     if (!preStreamRef.current) return;
+
+    // Ensure audio mixer is initialized
+    if (mixerRef.current) {
+      mixerRef.current.initAudioContext();
+    }
+
     const mediaStream = await preStreamRef.current.captureStream();
     if (!mediaStream) {
       toast.error('Start playing media first');

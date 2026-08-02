@@ -172,6 +172,7 @@ interface AudioScene {
 }
 
 interface AudioMixerRef {
+  initAudioContext: () => Promise<boolean>;
   getProcessedStream: () => MediaStream | null;
   getAudioContext: () => AudioContext | null;
   registerSource: (sourceId: string, stream: MediaStream | null) => void;
@@ -396,10 +397,18 @@ const ProfessionalAudioMixer = forwardRef<AudioMixerRef, ProfessionalAudioMixerP
 
     /* ── Initialize Audio Context & Full Processing Chain ──────────────────── */
 
-    const initAudioContext = useCallback(() => {
-      if (audioContextRef.current) return audioContextRef.current;
+    const initAudioContext = useCallback(async () => {
+      if (audioContextRef.current) {
+        if (audioContextRef.current.state === "suspended") {
+          await audioContextRef.current.resume();
+        }
+        return audioContextRef.current;
+      }
 
       const ctx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 48000 });
+      if (ctx.state === "suspended") {
+        await ctx.resume();
+      }
       audioContextRef.current = ctx;
 
       // ── Processing Chain (in order) ───────────────────────────────────
@@ -1507,6 +1516,13 @@ const ProfessionalAudioMixer = forwardRef<AudioMixerRef, ProfessionalAudioMixerP
 
     /* ── Expose ref methods ────────────────────────────────────────────────── */
     useImperativeHandle(ref, () => ({
+      initAudioContext: async () => {
+        if (!graphInitialized) {
+          await initAudioContext();
+          return true;
+        }
+        return false;
+      },
       getProcessedStream: () => destinationRef.current?.stream || null,
       getAudioContext: () => audioContextRef.current,
       registerSource: (sourceId: string, stream: MediaStream | null) => {
@@ -1554,6 +1570,29 @@ const ProfessionalAudioMixer = forwardRef<AudioMixerRef, ProfessionalAudioMixerP
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Power / Init */}
+            {!graphInitialized ? (
+              <Button
+                variant="default"
+                size="sm"
+                className="h-8 text-[10px] font-bold uppercase gap-2 bg-amber-600 hover:bg-amber-700 text-white animate-pulse"
+                onClick={initAudioContext}
+              >
+                <Power className="w-3 h-3" />
+                Start Audio Studio
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 text-[10px] font-bold uppercase gap-2 border-green-500/30 bg-green-500/10 text-green-400"
+                onClick={() => toast.info("Audio engine is active")}
+              >
+                <Power className="w-3 h-3" />
+                Active
+              </Button>
+            )}
+
             {/* Recording */}
             <Button
               variant="outline"
@@ -1592,6 +1631,27 @@ const ProfessionalAudioMixer = forwardRef<AudioMixerRef, ProfessionalAudioMixerP
             </Button>
           </div>
         </div>
+
+        {/* ── Initialization Overlay ──────────────────────────────────── */}
+        {!graphInitialized && (
+          <div className="absolute inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center">
+            <div className="bg-primary/20 p-4 rounded-full mb-4">
+              <Waves className="w-12 h-12 text-primary animate-pulse" />
+            </div>
+            <h3 className="text-xl font-black text-white uppercase italic tracking-tight mb-2">Pro Audio Engine Offline</h3>
+            <p className="text-slate-400 text-sm max-w-xs mb-6">
+              The professional audio processing chain requires activation to route your microphone and media audio.
+            </p>
+            <Button 
+              size="lg" 
+              className="bg-primary hover:bg-primary/90 text-white font-black uppercase italic tracking-widest px-8 py-6 rounded-2xl shadow-xl shadow-primary/20 transition-all hover:-translate-y-1 active:translate-y-0"
+              onClick={initAudioContext}
+            >
+              <Power className="w-5 h-5 mr-2" />
+              Start Audio Studio
+            </Button>
+          </div>
+        )}
 
         {/* ── Scene Presets Dropdown ──────────────────────────────────── */}
         <AnimatePresence>
