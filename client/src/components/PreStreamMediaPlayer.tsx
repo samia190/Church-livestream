@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, forwardRef, useImperativeHandle, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback, forwardRef, useImperativeHandle } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Play, Pause, SkipForward, SkipBack, Upload, Link as LinkIcon,
@@ -22,19 +22,21 @@ interface MediaItem {
 interface PreStreamMediaPlayerProps {
   /** Called when the user activates a media item to play it into the preview */
   onMediaActivate: (stream: MediaStream | null) => void;
+  /** Called when pre-stream audio is captured — passes an audio-only MediaStream to the mixer */
+  onAudioCapture?: (stream: MediaStream | null) => void;
   /** Whether the stream is currently live — disables some controls */
   isLive: boolean;
 }
 
 export interface PreStreamMediaPlayerRef {
-  /** Capture the current media as a MediaStream */
+  /** Capture the current media as a MediaStream (video + audio) */
   captureStream: () => Promise<MediaStream | null>;
   /** Stop capturing and clean up resources */
   stopCapture: () => void;
 }
 
 const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaPlayerProps>(
-  ({ onMediaActivate, isLive }, ref) => {
+  ({ onMediaActivate, onAudioCapture, isLive }, ref) => {
     const [mediaList, setMediaList] = useState<MediaItem[]>([]);
     const [currentIndex, setCurrentIndex] = useState<number>(-1);
     const [isPlaying, setIsPlaying] = useState(false);
@@ -76,7 +78,8 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
     /**
      * REAL-TIME VOLUME/MUTE SYNC
      * Syncs React state to the actual video/audio DOM elements immediately.
-     * This fixes the bug where volume/mute changes don't affect playing media.
+     * FIXED: Removed direct routing to audioContext.destination — audio is now
+     * routed to the mixer only via onAudioCapture callback.
      */
     useEffect(() => {
       const vol = muted ? 0 : volume / 100;
@@ -89,7 +92,7 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
         audioRef.current.muted = muted;
       }
 
-      // Professional: Update capture gain node with smooth ramping
+      // Update capture gain node with smooth ramping (for mixer input)
       if (captureGainNodeRef.current && audioContextRef.current) {
         const now = audioContextRef.current.currentTime;
         captureGainNodeRef.current.gain.setTargetAtTime(vol, now, 0.05);
@@ -114,8 +117,10 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
 
     /**
      * Capture the current media as a MediaStream.
-     * FIXED: For video type, captures audio from videoRef.current (not audioRef).
-     * FIXED: Uses Web Audio API properly to capture video element's audio.
+     * Video: captures from canvas (canvas.captureStream).
+     * Audio: captures from video/audio element via Web Audio API.
+     * The audio is routed ONLY to the MediaStreamDestination (for mixer),
+     * NOT to audioContext.destination (no local speaker playback).
      */
     const captureMediaStream = async (): Promise<MediaStream | null> => {
       if (!current || !isPlaying) {
@@ -135,7 +140,7 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
           videoTrack = await captureVideoTrack();
         }
 
-        // FIXED: For video type, capture audio from the VIDEO element, not the audio element
+        // Capture audio from the video/audio element
         if (current.type === "video" && videoRef.current) {
           audioTrack = await captureVideoElementAudio(videoRef.current);
         } else if (current.type === "audio" && audioRef.current) {
@@ -154,6 +159,13 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
         setAudioCaptured(!!audioTrack);
         captureStreamRef.current = stream;
         setIsBroadcasting(true);
+
+        // EMIT the audio-only stream to the mixer
+        if (audioTrack && onAudioCapture) {
+          const audioStream = new MediaStream([audioTrack]);
+          onAudioCapture(audioStream);
+        }
+
         return stream;
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown error";
@@ -233,16 +245,17 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
     };
 
     /**
-     * FIXED: Capture audio from any media element (video OR audio) using Web Audio API.
+     * Capture audio from any media element (video OR audio) using Web Audio API.
+     * FIXED: Routes audio ONLY to MediaStreamDestination (for the mixer).
+     * Does NOT connect to audioContext.destination — this prevents local speaker
+     * playback that would collide with the mixer's monitor output.
      * Uses a singleton source node pattern to avoid "already connected" errors.
-     * Ensures the audio element is actually playing before capture.
      */
     const captureVideoElementAudio = async (mediaElement: HTMLMediaElement): Promise<MediaStreamTrack | null> => {
       try {
         // Ensure the element is actually playing audio
         if (mediaElement.paused || mediaElement.muted || mediaElement.volume === 0) {
           console.warn("[PreStreamMediaPlayer] Media element is paused/muted/zero-volume during capture");
-          // Still attempt capture — the track might be useful
         }
 
         if (!audioContextRef.current) {
@@ -278,7 +291,7 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
           // Ignore disconnect errors
         }
 
-        // Create destination to capture audio as a MediaStream
+        // Create destination to capture audio as a MediaStream (goes to mixer)
         const destination = audioContext.createMediaStreamDestination();
 
         // Create a gain node to control volume/mute
@@ -286,14 +299,12 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
         gainNode.gain.value = muted ? 0 : volume / 100;
         captureGainNodeRef.current = gainNode;
 
-        // Route: source → gain → destination (capture) AND source → gain → speakers (monitor)
+        // Route: source → gain → destination (capture for mixer)
         source.connect(gainNode);
         gainNode.connect(destination);
-        try {
-          gainNode.connect(audioContext.destination);
-        } catch (err) {
-          // Already connected, fine
-        }
+
+        // DO NOT connect to audioContext.destination — the mixer handles all monitoring.
+        // This prevents audio collision between pre-stream speaker output and mixer monitor.
 
         const audioTrack = destination.stream.getAudioTracks()[0];
 
@@ -301,7 +312,7 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
           throw new Error("Failed to capture audio track — no audio data available");
         }
 
-        console.log("[PreStreamMediaPlayer] Audio captured successfully:", audioTrack.label, audioTrack.readyState);
+        console.log("[PreStreamMediaPlayer] Audio captured for mixer routing:", audioTrack.label, audioTrack.readyState);
         return audioTrack;
       } catch (error) {
         console.error("[PreStreamMediaPlayer] Audio capture error:", error);
@@ -335,7 +346,11 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
 
       setIsBroadcasting(false);
       setCaptureError(null);
-    }, []);
+      setAudioCaptured(false);
+
+      // Tell the parent to stop routing audio
+      onAudioCapture?.(null);
+    }, [onAudioCapture]);
 
     const detectMediaType = (file: File): "video" | "image" | "audio" => {
       if (file.type.startsWith("video/")) return "video";
@@ -394,7 +409,6 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
       toast.success("Media URL added");
     }, [urlInput, urlType, currentIndex]);
 
-    /** FIXED: Added missing removeItem function */
     const removeItem = useCallback((index: number) => {
       setMediaList(prev => {
         const next = prev.filter((_, i) => i !== index);
@@ -424,7 +438,6 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
           }
         }, 10000);
       } else if (current.type === "video" && videoRef.current) {
-        // FIXED: Apply volume/mute before playing
         videoRef.current.volume = muted ? 0 : volume / 100;
         videoRef.current.muted = muted;
         videoRef.current.loop = loop;
@@ -548,17 +561,17 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
             {current ? (
               <div className="w-full h-full flex items-center justify-center">
                 {current.type === "video" && (
-                    <video
-                      ref={videoRef}
-                      src={current.url}
-                      className="w-full h-full object-contain"
-                      onTimeUpdate={e => setCurrentTime(e.currentTarget.currentTime)}
-                      onLoadedMetadata={e => setDuration(e.currentTarget.duration)}
-                      onEnded={() => { if (!loop) handleNext(); }}
-                      playsInline
-                      preload="metadata"
-                      controlsList="nodownload noplaybackrate"
-                    />
+                  <video
+                    ref={videoRef}
+                    src={current.url}
+                    className="w-full h-full object-contain"
+                    onTimeUpdate={e => setCurrentTime(e.currentTarget.currentTime)}
+                    onLoadedMetadata={e => setDuration(e.currentTarget.duration)}
+                    onEnded={() => { if (!loop) handleNext(); }}
+                    playsInline
+                    preload="metadata"
+                    controlsList="nodownload noplaybackrate"
+                  />
                 )}
                 {current.type === "image" && (
                   <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-slate-900 to-slate-950">
@@ -610,7 +623,7 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
                       : "bg-amber-600/90 text-white"
                   }`}>
                     {audioCaptured ? <Volume2 className="w-3 h-3" /> : <VolumeX className="w-3 h-3" />}
-                    Audio {audioCaptured ? "Active" : "N/A"}
+                    Audio → Mixer
                   </div>
                 )}
 
@@ -777,7 +790,5 @@ const PreStreamMediaPlayer = forwardRef<PreStreamMediaPlayerRef, PreStreamMediaP
     );
   }
 );
-
-PreStreamMediaPlayer.displayName = "PreStreamMediaPlayer";
 
 export default PreStreamMediaPlayer;

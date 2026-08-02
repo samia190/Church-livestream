@@ -25,6 +25,8 @@ interface StartBroadcastArgs {
   initialMode?: "live" | "pre-stream";
   /** Optional: the original camera stream to save for restoration */
   originalCameraStream?: MediaStream;
+  /** The mixer-processed audio stream (UNIVERSAL audio source) */
+  mixerProcessedStream?: MediaStream | null;
 }
 
 export type BroadcastMode = "offline" | "pre-stream" | "live";
@@ -35,6 +37,7 @@ export function useBroadcaster() {
   const iceCandidateBuffersRef = useRef<Map<string, any[]>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
   const originalCameraStreamRef = useRef<MediaStream | null>(null);
+  const mixerProcessedStreamRef = useRef<MediaStream | null>(null);
   const sessionInfoRef = useRef<{ sessionId: string; title: string; description: string; initialMode: string } | null>(null);
   const wsReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wsReconnectAttemptRef = useRef(0);
@@ -101,17 +104,20 @@ export function useBroadcaster() {
     peersRef.current.set(viewerId, pc);
 
     const stream = localStreamRef.current;
+    const mixerAudio = mixerProcessedStreamRef.current;
+
     if (stream) {
-      stream.getTracks().forEach(track => {
-        const sender = pc.addTrack(track, stream);
+      // Add VIDEO track from the current stream
+      const videoTrack = stream.getVideoTracks()[0];
+      if (videoTrack) {
+        const sender = pc.addTrack(videoTrack, stream);
         // Set adaptive bitrate degradation for mobile viewers
-        if (track.kind === 'video' && sender) {
+        if (sender) {
           try {
             sender.setParameters({
               ...sender.getParameters(),
               degradationPreference: 'maintain-framerate',
               encodings: [{
-                // Start with a lower bitrate to ensure fast first frame on mobile data
                 maxBitrate: 1500000,
                 maxFramerate: 30,
                 networkPriority: 'high',
@@ -121,7 +127,21 @@ export function useBroadcaster() {
             console.log('[useBroadcaster] setParameters not supported:', e);
           }
         }
-      });
+      }
+
+      // Add AUDIO track from the MIXER-PROCESSED stream (UNIVERSAL AUDIO)
+      if (mixerAudio) {
+        const audioTrack = mixerAudio.getAudioTracks()[0];
+        if (audioTrack) {
+          pc.addTrack(audioTrack, mixerAudio);
+        }
+      } else {
+        // Fallback: use audio from the local stream
+        const audioTrack = stream.getAudioTracks()[0];
+        if (audioTrack) {
+          pc.addTrack(audioTrack, stream);
+        }
+      }
     }
 
     pc.onicecandidate = event => {
@@ -141,9 +161,7 @@ export function useBroadcaster() {
       const state = pc.connectionState;
       console.log(`[useBroadcaster] Viewer ${viewerId} connection state: ${state}`);
       if (state === "failed") {
-        // Try ICE restart before giving up
         try { pc.restartIce(); } catch (e) { console.log('[useBroadcaster] ICE restart failed:', e); }
-        // If still failed after 5s, clean up
         setTimeout(() => {
           if (pc.connectionState === 'failed') {
             try { pc.close(); } catch (e) {}
@@ -153,7 +171,6 @@ export function useBroadcaster() {
       } else if (state === "closed") {
         peersRef.current.delete(viewerId);
       } else if (state === "disconnected") {
-        // Brief connectivity loss — try ICE restart
         try { pc.restartIce(); } catch (e) {}
       }
     };
@@ -170,14 +187,12 @@ export function useBroadcaster() {
 
   const sendOfferToViewer = useCallback(
     async (viewerId: string) => {
-      // If we already have a peer connection for this viewer that's connected or connecting, skip
       const existingPc = peersRef.current.get(viewerId);
       if (existingPc) {
         if (['connected', 'connecting'].includes(existingPc.connectionState)) {
           console.log(`[useBroadcaster] Viewer ${viewerId} already has active connection, skipping broadcaster offer`);
           return;
         }
-        // Connection is in 'new' or 'failed' state — recreate
         try { existingPc.close(); } catch (e) {}
         peersRef.current.delete(viewerId);
       }
@@ -193,12 +208,10 @@ export function useBroadcaster() {
     [createPeerForViewer]
   );
 
-  // Handle a viewer-initiated offer (viewer creates offer, broadcaster answers)
   const handleViewerOffer = useCallback(
     async (viewerId: string, sdp: RTCSessionDescriptionInit) => {
       console.log(`[useBroadcaster] Received viewer-initiated offer from ${viewerId}`);
 
-      // If we already have a connected peer, skip
       const existingPc = peersRef.current.get(viewerId);
       if (existingPc && existingPc.connectionState === 'connected') {
         console.log(`[useBroadcaster] Viewer ${viewerId} already connected, skipping offer`);
@@ -214,7 +227,6 @@ export function useBroadcaster() {
           JSON.stringify({ type: "webrtc-answer", targetViewerId: viewerId, sdp: answer })
         );
 
-        // Flush buffered ICE candidates for this viewer
         const buf = iceCandidateBuffersRef.current.get(viewerId);
         if (buf && buf.length > 0) {
           for (const item of buf) {
@@ -264,11 +276,10 @@ export function useBroadcaster() {
                 await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
                 console.log(`[useBroadcaster] Applied answer from viewer ${answerViewerId}`);
 
-                // Flush buffered ICE candidates
                 const buf = iceCandidateBuffersRef.current.get(answerViewerId);
                 if (buf && buf.length > 0) {
                   for (const item of buf) {
-                    if (item.type === 'answer') continue; // Already applied
+                    if (item.type === 'answer') continue;
                     try {
                       await pc.addIceCandidate(new RTCIceCandidate(item));
                     } catch (err) {
@@ -279,13 +290,11 @@ export function useBroadcaster() {
                 }
               } catch (err) {
                 console.error(`[useBroadcaster] Failed to set remote description for ${answerViewerId}:`, err);
-                // Buffer for later
                 const buf = iceCandidateBuffersRef.current.get(answerViewerId) || [];
                 buf.push({ type: 'answer', sdp: msg.sdp });
                 iceCandidateBuffersRef.current.set(answerViewerId, buf);
               }
             } else {
-              // Buffer for later if peer connection not yet created
               const buf = iceCandidateBuffersRef.current.get(answerViewerId) || [];
               buf.push({ type: 'answer', sdp: msg.sdp });
               iceCandidateBuffersRef.current.set(answerViewerId, buf);
@@ -294,7 +303,6 @@ export function useBroadcaster() {
           break;
         }
         case "webrtc-offer": {
-          // Viewer-initiated offer: broadcaster answers it
           if (msg.viewerId && msg.sdp) {
             await handleViewerOffer(msg.viewerId, msg.sdp);
           }
@@ -306,24 +314,20 @@ export function useBroadcaster() {
             const pc = peersRef.current.get(viewerId);
             if (pc) {
               try {
-                // Only add if remote description is set
                 if (pc.remoteDescription) {
                   await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
                 } else {
-                  // Buffer until remote description is set
                   const buf = iceCandidateBuffersRef.current.get(viewerId) || [];
                   buf.push(msg.candidate);
                   iceCandidateBuffersRef.current.set(viewerId, buf);
                 }
               } catch (err) {
                 console.error("[useBroadcaster] Failed to add ICE candidate", err);
-                // Buffer for retry
                 const buf = iceCandidateBuffersRef.current.get(viewerId) || [];
                 buf.push(msg.candidate);
                 iceCandidateBuffersRef.current.set(viewerId, buf);
               }
             } else {
-              // Buffer ICE candidates until peer connection is created
               const buf = iceCandidateBuffersRef.current.get(viewerId) || [];
               buf.push(msg.candidate);
               iceCandidateBuffersRef.current.set(viewerId, buf);
@@ -385,6 +389,7 @@ export function useBroadcaster() {
     (stream: MediaStream, session: StartBroadcastArgs) => {
       localStreamRef.current = stream;
       originalCameraStreamRef.current = session.originalCameraStream || stream;
+      mixerProcessedStreamRef.current = session.mixerProcessedStream || null;
 
       const initialMode = session.initialMode || "live";
       sessionInfoRef.current = {
@@ -418,7 +423,6 @@ export function useBroadcaster() {
         ws.onmessage = handleMessage;
         ws.onclose = () => {
           setConnected(false);
-          // SILENT background reconnection — never reload the page
           if (isLive) {
             const delay = Math.min(1000 * Math.pow(1.5, Math.min(wsReconnectAttemptRef.current, 8)), 10000);
             wsReconnectAttemptRef.current++;
@@ -453,6 +457,7 @@ export function useBroadcaster() {
 
     localStreamRef.current = null;
     originalCameraStreamRef.current = null;
+    mixerProcessedStreamRef.current = null;
     sessionInfoRef.current = null;
     setIsLive(false);
     setViewerCount(0);
@@ -472,8 +477,9 @@ export function useBroadcaster() {
   }, [broadcastMode]);
 
   /**
-   * Replace the current broadcast stream with a new one.
-   * Used to switch between camera and pre-stream media while live.
+   * Replace ONLY the video track on all peer connections.
+   * Audio is ALWAYS from the mixer-processed stream — never replaced here.
+   * This prevents audio collision where pre-stream audio bypasses the mixer.
    */
   const replaceStream = useCallback(async (newStream: MediaStream | null) => {
     if (!newStream) {
@@ -482,19 +488,17 @@ export function useBroadcaster() {
     }
 
     try {
+      // ONLY replace the VIDEO track — audio stays from the mixer
       const newVideoTrack = newStream.getVideoTracks()[0];
-      const newAudioTrack = newStream.getAudioTracks()[0];
 
       for (const pc of Array.from(peersRef.current.values())) {
         const senders = pc.getSenders();
         for (const sender of senders) {
           if (sender.track?.kind === "video" && newVideoTrack) {
             await sender.replaceTrack(newVideoTrack);
-            console.log("[useBroadcaster] Video track replaced with media");
-          } else if (sender.track?.kind === "audio" && newAudioTrack) {
-            await sender.replaceTrack(newAudioTrack);
-            console.log("[useBroadcaster] Audio track replaced with media");
+            console.log("[useBroadcaster] Video track replaced — audio stays from mixer");
           }
+          // DO NOT replace audio tracks — the mixer controls all audio
         }
       }
 
@@ -508,13 +512,17 @@ export function useBroadcaster() {
       }
 
       setBroadcastMode("pre-stream");
-      console.log("[useBroadcaster] Stream replaced with pre-stream media");
+      console.log("[useBroadcaster] Video source changed — mixer audio unchanged");
     } catch (error) {
       console.error("[useBroadcaster] Failed to replace stream:", error);
       throw error;
     }
   }, []);
 
+  /**
+   * Replace ONLY the video track back to camera.
+   * Audio remains from the mixer — NEVER restored to raw camera audio.
+   */
   const restoreOriginalStream = useCallback(async () => {
     const originalStream = originalCameraStreamRef.current;
     if (!originalStream) {
@@ -523,7 +531,6 @@ export function useBroadcaster() {
 
     try {
       const videoTrack = originalStream.getVideoTracks()[0];
-      const audioTrack = originalStream.getAudioTracks()[0];
 
       for (const pc of Array.from(peersRef.current.values())) {
         const senders = pc.getSenders();
@@ -531,10 +538,8 @@ export function useBroadcaster() {
           if (sender.track?.kind === "video" && videoTrack) {
             await sender.replaceTrack(videoTrack);
             console.log("[useBroadcaster] Video track restored to camera");
-          } else if (sender.track?.kind === "audio" && audioTrack) {
-            await sender.replaceTrack(audioTrack);
-            console.log("[useBroadcaster] Audio track restored to microphone");
           }
+          // DO NOT replace audio — mixer controls all audio
         }
       }
 
@@ -548,7 +553,7 @@ export function useBroadcaster() {
       }
 
       setBroadcastMode("live");
-      console.log("[useBroadcaster] Stream restored to live camera");
+      console.log("[useBroadcaster] Video restored to camera — mixer audio unchanged");
     } catch (error) {
       console.error("[useBroadcaster] Failed to restore stream:", error);
       throw error;
@@ -559,25 +564,26 @@ export function useBroadcaster() {
     localStreamRef.current = newStream;
     originalCameraStreamRef.current = newStream;
     const newVideoTrack = newStream.getVideoTracks()[0];
-    const newAudioTrack = newStream.getAudioTracks()[0];
 
+    // ONLY replace video — audio is always from the mixer
     peersRef.current.forEach(pc => {
       pc.getSenders().forEach(sender => {
         if (sender.track?.kind === "video" && newVideoTrack) {
           sender.replaceTrack(newVideoTrack);
-        } else if (sender.track?.kind === "audio" && newAudioTrack) {
-          sender.replaceTrack(newAudioTrack);
         }
       });
     });
   }, []);
 
+  /**
+   * Transition from pre-stream to live camera.
+   * ONLY replaces video track — audio stays from mixer.
+   */
   const goLiveFromPreStream = useCallback(async () => {
     const originalStream = originalCameraStreamRef.current;
     if (originalStream) {
       try {
         const videoTrack = originalStream.getVideoTracks()[0];
-        const audioTrack = originalStream.getAudioTracks()[0];
 
         for (const pc of Array.from(peersRef.current.values())) {
           const senders = pc.getSenders();
@@ -585,10 +591,8 @@ export function useBroadcaster() {
             if (sender.track?.kind === "video" && videoTrack) {
               await sender.replaceTrack(videoTrack);
               console.log("[useBroadcaster] Video track switched to camera for go-live");
-            } else if (sender.track?.kind === "audio" && audioTrack) {
-              await sender.replaceTrack(audioTrack);
-              console.log("[useBroadcaster] Audio track switched to mic for go-live");
             }
+            // DO NOT replace audio — mixer owns all audio
           }
         }
         localStreamRef.current = originalStream;
@@ -604,8 +608,36 @@ export function useBroadcaster() {
       }));
     }
     setBroadcastMode("live");
-    console.log("[useBroadcaster] Transitioned from pre-stream to live");
+    console.log("[useBroadcaster] Transitioned from pre-stream to live — mixer audio unchanged");
   }, []);
+
+  /**
+   * Update the mixer-processed audio stream reference.
+   * Called by the ProfessionalAudioMixer when its output stream changes.
+   * Replaces the audio track on all active peer connections.
+   */
+  const updateMixerAudio = useCallback(async (processedStream: MediaStream | null) => {
+    mixerProcessedStreamRef.current = processedStream;
+
+    if (!processedStream || !isLive) return;
+
+    const newAudioTrack = processedStream.getAudioTracks()[0];
+    if (!newAudioTrack) return;
+
+    try {
+      for (const pc of Array.from(peersRef.current.values())) {
+        const senders = pc.getSenders();
+        for (const sender of senders) {
+          if (sender.track?.kind === "audio") {
+            await sender.replaceTrack(newAudioTrack);
+          }
+        }
+      }
+      console.log("[useBroadcaster] Mixer audio track updated on all peers");
+    } catch (err) {
+      console.error("[useBroadcaster] Failed to update mixer audio:", err);
+    }
+  }, [isLive]);
 
   return {
     connected,
@@ -622,6 +654,7 @@ export function useBroadcaster() {
     replaceStream,
     restoreOriginalStream,
     goLiveFromPreStream,
+    updateMixerAudio,
     sendChatMessage,
     deleteChatMessage,
   };

@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useCallback } from 'react';
+import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -87,8 +87,11 @@ export const ModernLiveStudio: React.FC = () => {
   const [isOverlayActive, setIsOverlayActive] = useState(false);
   const preStreamRef = useRef<PreStreamMediaPlayerRef>(null);
 
-  // Audio mixer processed stream
+  // Audio mixer state
+  const mixerRef = useRef<any>(null);
   const [mixerProcessedStream, setMixerProcessedStream] = useState<MediaStream | null>(null);
+  const [preStreamAudioStream, setPreStreamAudioStream] = useState<MediaStream | null>(null);
+  const [broadcastAudioReady, setBroadcastAudioReady] = useState(false);
 
   // Initialize camera on mount
   useEffect(() => {
@@ -117,6 +120,7 @@ export const ModernLiveStudio: React.FC = () => {
     replaceStream,
     restoreOriginalStream,
     goLiveFromPreStream,
+    updateMixerAudio,
     chatMessages: liveChatMessages,
     sendChatMessage,
     deleteChatMessage
@@ -140,6 +144,13 @@ export const ModernLiveStudio: React.FC = () => {
       peakViewersRef.current = Math.max(peakViewersRef.current, viewerCount);
     }
   }, [isLive, viewerCount, streamStats]);
+
+  // When mixer produces a new processed stream, update the broadcaster's audio
+  useEffect(() => {
+    if (isLive && mixerProcessedStream && broadcastAudioReady) {
+      updateMixerAudio(mixerProcessedStream);
+    }
+  }, [mixerProcessedStream, isLive, broadcastAudioReady, updateMixerAudio]);
 
   const handleGoLive = async () => {
     if (!streamTitle.trim()) {
@@ -168,16 +179,18 @@ export const ModernLiveStudio: React.FC = () => {
         setIsOverlayActive(true);
       }
 
+      // Pass the mixer-processed stream so the broadcaster uses it as the audio source
       startBroadcast(initialStream, {
         sessionId: result.sessionId,
         title: streamTitle,
         description: streamDescription,
         initialMode,
-        // Always pass the camera stream as the original, even when starting with pre-stream
         originalCameraStream: stream,
+        mixerProcessedStream: mixerProcessedStream,
       });
 
       setIsLive(true);
+      setBroadcastAudioReady(true);
       toast.success(initialMode === 'pre-stream' ? 'Broadcast started with Media' : 'You are now LIVE!');
     } catch (err) {
       toast.error('Failed to go live');
@@ -190,6 +203,8 @@ export const ModernLiveStudio: React.FC = () => {
     setIsOverlayActive(false);
     setOverlaySource(null);
     setActiveOverlayStream(null);
+    setBroadcastAudioReady(false);
+    setPreStreamAudioStream(null);
     if (sessionId !== null) {
       try {
         await endLiveMutation({ sessionId });
@@ -199,6 +214,10 @@ export const ModernLiveStudio: React.FC = () => {
     toast.success('Broadcast ended');
   };
 
+  /**
+   * Switch viewers to see pre-stream media (video only).
+   * Audio remains from the mixer — NO audio collision possible.
+   */
   const handleShowMediaToViewers = async () => {
     if (!preStreamRef.current) return;
     const mediaStream = await preStreamRef.current.captureStream();
@@ -207,30 +226,67 @@ export const ModernLiveStudio: React.FC = () => {
       return;
     }
 
-    setActiveOverlayStream(mediaStream);
+    // Extract VIDEO track only — audio is handled by the mixer
+    const videoTrack = mediaStream.getVideoTracks()[0];
+    const audioTrack = mediaStream.getAudioTracks()[0];
+
+    // Create a video-only stream for the overlay preview
+    const videoOnlyStream = new MediaStream();
+    if (videoTrack) videoOnlyStream.addTrack(videoTrack);
+    setActiveOverlayStream(videoOnlyStream);
     setIsOverlayActive(true);
     setOverlaySource('media');
 
+    // Route the pre-stream AUDIO through the mixer (not directly to broadcast)
+    if (audioTrack) {
+      const audioStream = new MediaStream([audioTrack]);
+      setPreStreamAudioStream(audioStream);
+      toast.success('Switching to Media — video shows to viewers, audio routes through mixer');
+    } else {
+      setPreStreamAudioStream(null);
+      toast.success('Switching to Media (no audio)');
+    }
+
     if (isLive) {
       try {
-        await replaceStream(mediaStream);
-        toast.success('Switching to Media Source');
+        // replaceStream now ONLY replaces video — audio stays from mixer
+        const videoOnlyForBroadcast = new MediaStream();
+        if (videoTrack) videoOnlyForBroadcast.addTrack(videoTrack);
+        // Add the mixer audio track so broadcast has both
+        if (mixerProcessedStream) {
+          const mixerAudio = mixerProcessedStream.getAudioTracks()[0];
+          if (mixerAudio) videoOnlyForBroadcast.addTrack(mixerAudio);
+        }
+        await replaceStream(videoOnlyForBroadcast);
       } catch (err) {
         toast.error('Failed to switch to media');
       }
     }
   };
 
+  /**
+   * Switch viewers back to camera (video only).
+   * Audio remains from the mixer — no raw camera audio replacement.
+   */
   const handleShowCameraToViewers = async () => {
     if (!stream) return;
     setActiveOverlayStream(null);
     setIsOverlayActive(false);
     setOverlaySource('camera');
+    setPreStreamAudioStream(null);
 
     if (isLive) {
       try {
-        await restoreOriginalStream();
-        toast.success('Switching to Camera Source');
+        // Create a combined stream with camera video + mixer audio
+        const broadcastStream = new MediaStream();
+        const videoTrack = stream.getVideoTracks()[0];
+        if (videoTrack) broadcastStream.addTrack(videoTrack);
+        if (mixerProcessedStream) {
+          const mixerAudio = mixerProcessedStream.getAudioTracks()[0];
+          if (mixerAudio) broadcastStream.addTrack(mixerAudio);
+        }
+        await replaceStream(broadcastStream);
+        toast.success('Switching to Camera — audio stays from mixer');
       } catch (err) {
         toast.error('Failed to switch to camera');
       }
@@ -243,6 +299,7 @@ export const ModernLiveStudio: React.FC = () => {
       setIsOverlayActive(false);
       setOverlaySource('camera');
       setActiveOverlayStream(null);
+      setPreStreamAudioStream(null);
       toast.success('Now showing LIVE camera!');
     } catch (err) {
       toast.error('Failed to go live');
@@ -266,6 +323,46 @@ export const ModernLiveStudio: React.FC = () => {
     } catch (err) {}
   };
 
+  const [availableMics, setAvailableMics] = useState<MediaDeviceInfo[]>([]);
+  const [selectedMicId, setSelectedMicId] = useState<string>("default");
+
+  // Enumerate microphone devices
+  useEffect(() => {
+    async function listMics() {
+      try {
+        // Request permission first so labels are populated
+        const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        tempStream.getTracks().forEach(t => t.stop());
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        setAvailableMics(devices.filter(d => d.kind === 'audioinput'));
+      } catch (err) {
+        console.warn('Could not enumerate mic devices:', err);
+      }
+    }
+    listMics();
+  }, []);
+
+  /**
+   * Switch microphone device via the mixer.
+   * The mixer handles the audio graph re-wiring.
+   * We just update the video preview with the new video track.
+   */
+  const handleSwitchMicrophone = useCallback(async (deviceId: string) => {
+    setSelectedMicId(deviceId);
+    if (mixerRef.current) {
+      const newMicStream = await mixerRef.current.switchMicrophone(deviceId);
+      if (newMicStream && stream) {
+        // Create a combined stream: camera video + new mic audio
+        const combined = new MediaStream();
+        const videoTrack = stream.getVideoTracks()[0];
+        if (videoTrack) combined.addTrack(videoTrack);
+        newMicStream.getAudioTracks().forEach(t => combined.addTrack(t));
+        if (videoRef.current) videoRef.current.srcObject = combined;
+      }
+    }
+    toast.success('Microphone device switched');
+  }, [stream]);
+
   const handleSendChat = () => {
     if (!newMessage.trim()) return;
     sendChatMessage(newMessage, 'Admin');
@@ -282,10 +379,6 @@ export const ModernLiveStudio: React.FC = () => {
     }
   };
 
-  /**
-   * Professional: Mixer handles all audio logic internally via gain nodes.
-   * We just show a toast for feedback.
-   */
   const [monitorMuted, setMonitorMuted] = useState(false);
 
   const handleMixerMuteChange = useCallback((trackId: string, muted: boolean) => {
@@ -297,28 +390,13 @@ export const ModernLiveStudio: React.FC = () => {
   }, []);
 
   /**
-   * Professional: Handle mixer output stream.
-   * This is the final, processed, combined audio (Mic + Music + System).
-   * We merge this audio with our video and send it to viewers.
+   * Handle mixer output stream — this is the UNIVERSAL processed audio.
+   * When live, the broadcaster's updateMixerAudio will replace audio tracks on peers.
    */
   const handleMixerProcessedStream = useCallback((processedStream: MediaStream | null) => {
     setMixerProcessedStream(processedStream);
-    
-    if (isLive && processedStream) {
-      const currentVideoSource = activeOverlayStream || camera.stream;
-      if (currentVideoSource) {
-        const videoTrack = currentVideoSource.getVideoTracks()[0];
-        const audioTrack = processedStream.getAudioTracks()[0];
-        
-        if (videoTrack && audioTrack) {
-          const combinedStream = new MediaStream([videoTrack, audioTrack]);
-          // replaceStream handles swapping the tracks for all viewers
-          replaceStream(combinedStream);
-          console.log("[Studio] Broadcast stream updated with professional mixed audio");
-        }
-      }
-    }
-  }, [isLive, activeOverlayStream, camera.stream, replaceStream]);
+    // The useEffect above will call updateMixerAudio when isLive && broadcastAudioReady
+  }, []);
 
   const handleMonitorMuteChange = useCallback((muted: boolean) => {
     setMonitorMuted(muted);
@@ -343,8 +421,6 @@ export const ModernLiveStudio: React.FC = () => {
   const toggleSection = (section: keyof SectionState) => {
     setExpandedSections(prev => ({ ...prev, [section]: !prev[section] }));
   };
-
-
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200 p-3 sm:p-6 font-sans">
@@ -400,103 +476,48 @@ export const ModernLiveStudio: React.FC = () => {
             <video
               ref={videoRef}
               autoPlay
-              playsInline
               muted
-              className={`w-full h-full object-cover transition-all duration-700 ${isLive ? 'opacity-100' : 'opacity-60 grayscale-[0.5]'}`}
+              playsInline
+              className="w-full h-full object-cover"
             />
 
-            {/* HUD Overlays */}
-            <div className="absolute inset-0 pointer-events-none p-6 flex flex-col justify-between">
-              <div className="flex justify-between items-start">
-                <div className="flex items-center gap-3">
-                  <div className={`px-3 py-1.5 rounded-lg backdrop-blur-md border flex items-center gap-2 ${
-                    isLive ? 'bg-red-600/80 border-red-400/50 text-white' : 'bg-slate-900/80 border-slate-700 text-slate-400'
-                  }`}>
-                    <div className={`w-2 h-2 rounded-full ${isLive ? 'bg-white animate-pulse' : 'bg-slate-500'}`} />
-                    <span className="text-[10px] font-black uppercase tracking-widest">{isLive ? 'ON AIR' : 'OFFLINE'}</span>
-                  </div>
-                  {isOverlayActive && (
-                    <div className="px-3 py-1.5 rounded-lg bg-primary/80 backdrop-blur-md border border-primary/50 text-white flex items-center gap-2">
-                      <MonitorPlay className="w-3.5 h-3.5" />
-                      <span className="text-[10px] font-black uppercase tracking-widest">Media Source</span>
-                    </div>
-                  )}
-                </div>
-
-                <div className="bg-black/60 backdrop-blur-md px-3 py-2 rounded-xl border border-white/10 flex flex-col items-end gap-1">
-                  <div className="flex items-center gap-2 text-[9px] font-bold text-slate-400 uppercase tracking-tighter">
-                    <Cpu className="w-3 h-3" />
-                    SYSTEM LOAD: {stats.cpuUsage}%
-                  </div>
-                  <div className="w-24 h-1 bg-slate-800 rounded-full overflow-hidden">
-                    <div className="h-full bg-primary" style={{ width: `${stats.cpuUsage}%` }} />
-                  </div>
+            {/* Status overlay */}
+            {isLive && (
+              <div className="absolute top-4 left-4 flex items-center gap-2">
+                <div className="flex items-center gap-2 bg-red-600 px-3 py-1.5 rounded-lg shadow-lg">
+                  <div className="w-2 h-2 rounded-full bg-white animate-pulse" />
+                  <span className="text-[10px] font-black uppercase text-white tracking-widest">
+                    {broadcastMode === 'pre-stream' ? 'Pre-Stream' : 'LIVE'}
+                  </span>
                 </div>
               </div>
+            )}
 
-              <div className="flex justify-between items-end">
-                <div className="bg-black/60 backdrop-blur-md p-4 rounded-2xl border border-white/10 max-w-md">
-                  <h4 className="text-white font-black italic uppercase tracking-tight truncate">{streamTitle}</h4>
-                  <div className="flex items-center gap-4 mt-2">
-                    <div className="flex items-center gap-1.5 text-[9px] font-bold text-slate-400 uppercase">
-                      <Globe className="w-3 h-3 text-primary" />
-                      Global Distribution Active
-                    </div>
-                    <div className="flex items-center gap-1.5 text-[9px] font-bold text-slate-400 uppercase">
-                      <Clock className="w-3 h-3 text-primary" />
-                      {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex gap-2">
-                  <div className="w-10 h-10 rounded-xl bg-black/60 backdrop-blur-md border border-white/10 flex items-center justify-center text-white">
-                    <Scan className="w-5 h-5" />
-                  </div>
+            {!stream && !activeOverlayStream && (
+              <div className="absolute inset-0 flex items-center justify-center bg-slate-950/80">
+                <div className="text-center space-y-4">
+                  <Camera className="w-16 h-16 mx-auto text-slate-700" />
+                  <p className="text-slate-500 text-sm">Camera not available</p>
                 </div>
               </div>
-            </div>
-
-            {/* Source Switcher Overlay */}
-              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 active:opacity-100 transition-all duration-300 flex flex-col sm:flex-row gap-2 sm:gap-4">
-              {!isOverlayActive ? (
-                <Button
-                  onClick={handleShowMediaToViewers}
-                  className="bg-primary/90 hover:bg-primary text-white font-black uppercase italic tracking-widest px-8 py-6 h-auto rounded-2xl backdrop-blur-xl shadow-2xl"
-                >
-                  <MonitorPlay className="w-5 h-5 mr-3" />
-                  Switch to Media
-                </Button>
-              ) : (
-                <Button
-                  onClick={handleShowCameraToViewers}
-                  className="bg-slate-100 text-slate-900 hover:bg-white font-black uppercase italic tracking-widest px-8 py-6 h-auto rounded-2xl backdrop-blur-xl shadow-2xl"
-                >
-                  <Camera className="w-5 h-5 mr-3" />
-                  Back to Camera
-                </Button>
-              )}
-            </div>
+            )}
           </div>
 
-          {/* Master Control Bar */}
-          <Card className="bg-slate-900 border-slate-800 p-3 sm:p-6 rounded-xl sm:rounded-[2rem] shadow-xl">
-            <div className="flex flex-col md:flex-row gap-6 items-center justify-between">
-              <div className="flex items-center gap-6">
+          {/* Go Live / Control Buttons */}
+          <Card className="bg-slate-900 border-slate-800 p-4 rounded-xl sm:rounded-3xl">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-4">
                 {!isLive ? (
                   <Button
-                    size="lg"
                     onClick={handleGoLive}
                     disabled={goLivePending}
-                    className="bg-red-600 hover:bg-red-700 text-white font-black uppercase italic tracking-[0.2em] px-10 py-8 h-auto rounded-2xl shadow-[0_10px_30px_rgba(220,38,38,0.3)] transition-all hover:-translate-y-1"
+                    className="bg-red-600 hover:bg-red-700 text-white font-black uppercase italic tracking-[0.2em] px-10 py-8 h-auto rounded-2xl shadow-2xl transition-all hover:-translate-y-1"
                   >
-                    {goLivePending ? <Loader2 className="w-6 h-6 animate-spin mr-3" /> : <Radio className="w-6 h-6 mr-3" />}
-                    Start Broadcast
+                    {goLivePending ? <Loader2 className="w-6 h-6 mr-3 animate-spin" /> : <Radio className="w-6 h-6 mr-3" />}
+                    {goLivePending ? 'Going Live...' : 'Go Live'}
                   </Button>
                 ) : (
                   <Button
-                    size="lg"
-                    variant="destructive"
                     onClick={handleStopLive}
                     className="bg-slate-100 hover:bg-white text-red-600 font-black uppercase italic tracking-[0.2em] px-10 py-8 h-auto rounded-2xl shadow-2xl transition-all hover:-translate-y-1"
                   >
@@ -535,15 +556,27 @@ export const ModernLiveStudio: React.FC = () => {
                  ref={preStreamRef}
                  isLive={isLive}
                  onMediaActivate={handlePreStreamMediaActivate}
+                 onAudioCapture={setPreStreamAudioStream}
                />
              </div>
              <div className="h-auto sm:h-[500px]">
                <ProfessionalAudioMixer
+                 ref={mixerRef}
                  mediaStream={stream}
+                 preStreamAudioStream={preStreamAudioStream}
                  onVolumeChange={handleMixerVolumeChange}
                  onMuteChange={handleMixerMuteChange}
                  onProcessedStream={handleMixerProcessedStream}
                  onMonitorMuteChange={handleMonitorMuteChange}
+                 onMicrophoneSwitch={(newStream) => {
+                   if (newStream && stream) {
+                     const combined = new MediaStream();
+                     const videoTrack = stream.getVideoTracks()[0];
+                     if (videoTrack) combined.addTrack(videoTrack);
+                     newStream.getAudioTracks().forEach(t => combined.addTrack(t));
+                     if (videoRef.current) videoRef.current.srcObject = combined;
+                   }
+                 }}
                />
              </div>
           </div>
@@ -703,6 +736,52 @@ export const ModernLiveStudio: React.FC = () => {
                 <FlipHorizontal className="w-4 h-4" />
                 Flip Camera
               </Button>
+            </div>
+          </Card>
+
+          {/* Microphone Selector */}
+          <Card className="bg-slate-900 border-slate-800 p-3 sm:p-6 rounded-xl sm:rounded-[2.5rem]">
+            <div className="flex items-center gap-3 mb-6">
+              <Mic className="w-5 h-5 text-slate-400" />
+              <h3 className="font-black text-white italic uppercase tracking-tight">Microphone</h3>
+            </div>
+
+            <div className="space-y-3">
+              {availableMics.map(device => (
+                <motion.button
+                  key={device.deviceId}
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={() => handleSwitchMicrophone(device.deviceId)}
+                  className={`w-full flex items-center gap-4 p-4 rounded-xl border transition-all ${
+                    device.deviceId === selectedMicId
+                      ? 'bg-green-500/10 border-green-500/30 text-white shadow-lg shadow-green-900/10'
+                      : 'bg-slate-800/50 border-slate-700/50 text-slate-400 hover:bg-slate-800 hover:text-white'
+                  }`}
+                >
+                  <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
+                    device.deviceId === selectedMicId ? 'bg-green-500 text-white' : 'bg-slate-700 text-slate-400'
+                  }`}>
+                    <Mic className="w-5 h-5" />
+                  </div>
+                  <div className="text-left flex-1 min-w-0">
+                    <p className="text-sm font-bold truncate">{device.label || 'Unknown Microphone'}</p>
+                    <p className="text-[10px] text-slate-500 uppercase tracking-wider">
+                      {device.deviceId === selectedMicId ? 'Active' : 'Click to switch'}
+                    </p>
+                  </div>
+                  {device.deviceId === selectedMicId && (
+                    <CheckCircle className="w-5 h-5 text-green-400" />
+                  )}
+                </motion.button>
+              ))}
+
+              {availableMics.length === 0 && (
+                <div className="text-center py-6 text-slate-500">
+                  <Mic className="w-8 h-8 mx-auto mb-2 opacity-30" />
+                  <p className="text-xs">No microphones detected</p>
+                </div>
+              )}
             </div>
           </Card>
         </div>
