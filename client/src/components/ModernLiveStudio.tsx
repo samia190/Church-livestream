@@ -277,16 +277,15 @@ export const ModernLiveStudio: React.FC = () => {
 
     if (isLive) {
       try {
-        // Create a combined stream with camera video + mixer audio
-        const broadcastStream = new MediaStream();
-        const videoTrack = stream.getVideoTracks()[0];
-        if (videoTrack) broadcastStream.addTrack(videoTrack);
-        if (mixerProcessedStream) {
-          const mixerAudio = mixerProcessedStream.getAudioTracks()[0];
-          if (mixerAudio) broadcastStream.addTrack(mixerAudio);
+        // If we're in pre-stream mode, use restoreOriginalStream to properly restore live mode
+        if (broadcastMode === 'pre-stream') {
+          await restoreOriginalStream();
+          toast.success('Switching to Camera — now LIVE!');
+        } else {
+          // Already in live mode, just update the local stream with camera video
+          updateLocalStream(stream);
+          toast.success('Switching to Camera — audio stays from mixer');
         }
-        await replaceStream(broadcastStream);
-        toast.success('Switching to Camera — audio stays from mixer');
       } catch (err) {
         toast.error('Failed to switch to camera');
       }
@@ -534,6 +533,28 @@ export const ModernLiveStudio: React.FC = () => {
                     <Zap className="w-5 h-5 mr-2" />
                     Go Live with Camera
                   </Button>
+                )}
+
+                {isLive && broadcastMode === 'live' && (
+                  <div className="flex items-center gap-2">
+                    <Button
+                      onClick={handleShowMediaToViewers}
+                      disabled={!preStreamRef.current}
+                      className="bg-amber-600 hover:bg-amber-700 text-white font-black uppercase italic tracking-[0.1em] px-6 py-8 h-auto rounded-2xl transition-all hover:-translate-y-1"
+                      title="Switch viewers to pre-stream media"
+                    >
+                      <Film className="w-5 h-5 mr-2" />
+                      Show Media
+                    </Button>
+                    <Button
+                      onClick={handleShowCameraToViewers}
+                      className="bg-blue-600 hover:bg-blue-700 text-white font-black uppercase italic tracking-[0.1em] px-6 py-8 h-auto rounded-2xl transition-all hover:-translate-y-1"
+                      title="Switch viewers back to camera"
+                    >
+                      <Camera className="w-5 h-5 mr-2" />
+                      Show Camera
+                    </Button>
+                  </div>
                 )}
               </div>
 
