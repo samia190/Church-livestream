@@ -165,7 +165,7 @@ export const ModernLiveStudio: React.FC = () => {
     try {
       // Initialize the professional audio engine (requires user gesture)
       if (mixerRef.current) {
-        mixerRef.current.initAudioContext();
+        await mixerRef.current.initAudioContext();
       }
 
       const result = await goLiveMutation({
@@ -185,13 +185,15 @@ export const ModernLiveStudio: React.FC = () => {
       }
 
       // Pass the mixer-processed stream so the broadcaster uses it as the audio source
+      const currentMixerStream = mixerRef.current?.getProcessedStream();
+      
       startBroadcast(initialStream, {
         sessionId: result.sessionId,
         title: streamTitle,
         description: streamDescription,
         initialMode,
         originalCameraStream: stream,
-        mixerProcessedStream: mixerProcessedStream,
+        mixerProcessedStream: currentMixerStream || mixerProcessedStream,
       });
 
       setIsLive(true);
@@ -228,7 +230,7 @@ export const ModernLiveStudio: React.FC = () => {
 
     // Ensure audio mixer is initialized
     if (mixerRef.current) {
-      mixerRef.current.initAudioContext();
+      await mixerRef.current.initAudioContext();
     }
 
     const mediaStream = await preStreamRef.current.captureStream();

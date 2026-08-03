@@ -625,19 +625,25 @@ export function useBroadcaster() {
     if (!newAudioTrack) return;
 
     try {
-      for (const pc of Array.from(peersRef.current.values())) {
+      for (const [viewerId, pc] of Array.from(peersRef.current.entries())) {
         const senders = pc.getSenders();
-        for (const sender of senders) {
-          if (sender.track?.kind === "audio") {
-            await sender.replaceTrack(newAudioTrack);
-          }
+        let audioSender = senders.find(s => s.track?.kind === "audio");
+        
+        if (audioSender) {
+          await audioSender.replaceTrack(newAudioTrack);
+        } else {
+          // If no audio track was initially present, we MUST add it
+          pc.addTrack(newAudioTrack, processedStream);
+          // Trigger a new offer to include the newly added track
+          await sendOfferToViewer(viewerId);
+          console.log(`[useBroadcaster] Added missing audio track and sent new offer to viewer ${viewerId}`);
         }
       }
       console.log("[useBroadcaster] Mixer audio track updated on all peers");
     } catch (err) {
       console.error("[useBroadcaster] Failed to update mixer audio:", err);
     }
-  }, [isLive]);
+  }, [isLive, sendOfferToViewer]);
 
   return {
     connected,

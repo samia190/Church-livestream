@@ -156,7 +156,10 @@ export function useViewer() {
       if (stream) {
         stream.getAudioTracks().forEach(t => { t.enabled = true; });
         stream.getVideoTracks().forEach(t => { t.enabled = true; });
-        setRemoteStream(stream);
+        
+        // Force a new MediaStream object to ensure React detects the change when tracks are added
+        setRemoteStream(new MediaStream(stream.getTracks()));
+        
         setConnectionState("connected");
         reconnectAttemptRef.current = 0;
       }
@@ -244,10 +247,15 @@ export function useViewer() {
       }
       case "webrtc-offer": {
         isConnectingRef.current = true;
-        if (pcRef.current && (pcRef.current.connectionState === 'connected' || pcRef.current.connectionState === 'connecting')) break;
-        cleanupPeerConnection();
-        const pc = createPeerConnection();
-        setupTrackHandler(pc);
+        if (pcRef.current && (pcRef.current.connectionState === 'connected' || pcRef.current.connectionState === 'connecting')) {
+          if (pcRef.current.signalingState !== "stable") break;
+          console.log('[useViewer] Handling broadcaster offer as renegotiation');
+        } else {
+          cleanupPeerConnection();
+          const pc = createPeerConnection();
+          setupTrackHandler(pc);
+        }
+        const pc = pcRef.current!;
         try {
           await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
           const answer = await pc.createAnswer();
@@ -268,6 +276,10 @@ export function useViewer() {
         const currentPc = pcRef.current;
         if (currentPc) {
           try {
+            if (currentPc.signalingState !== "have-local-offer") {
+              console.log(`[useViewer] Ignoring answer: signalingState is ${currentPc.signalingState}`);
+              break;
+            }
             await currentPc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
             isConnectingRef.current = false;
             hasReceivedAnswerRef.current = true;

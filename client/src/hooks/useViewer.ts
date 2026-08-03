@@ -233,7 +233,10 @@ export function useViewer() {
         // Mobile optimization: ensure tracks are enabled
         stream.getAudioTracks().forEach(t => { t.enabled = true; });
         stream.getVideoTracks().forEach(t => { t.enabled = true; });
-        setRemoteStream(stream);
+        
+        // Force a new MediaStream object to ensure React detects the change when tracks are added
+        setRemoteStream(new MediaStream(stream.getTracks()));
+        
         setConnectionState("connected");
         reconnectAttemptRef.current = 0;
       }
@@ -380,16 +383,22 @@ export function useViewer() {
           // BROADCASTER-INITIATED: Broadcaster sent us an offer to answer
           isConnectingRef.current = true;
 
-          // If we already have a connection in progress, don't create a new one
-          // (this can happen with dual-mode — both sides try simultaneously)
+          // If we already have a connection, check if we can handle this offer as a renegotiation
           if (pcRef.current && (pcRef.current.connectionState === 'connected' || pcRef.current.connectionState === 'connecting')) {
-            console.log('[useViewer] Already have active connection, ignoring broadcaster offer');
-            break;
+            // If we are in the middle of our own offer, we might have a collision (glare)
+            // For now, let's allow the broadcaster's offer to take precedence if we are stable
+            if (pcRef.current.signalingState !== "stable") {
+              console.log('[useViewer] Connection busy, ignoring broadcaster offer');
+              break;
+            }
+            console.log('[useViewer] Handling broadcaster offer as renegotiation');
+          } else {
+            cleanupPeerConnection();
+            const pc = createPeerConnection();
+            setupTrackHandler(pc);
           }
 
-          cleanupPeerConnection();
-          const pc = createPeerConnection();
-          setupTrackHandler(pc);
+          const pc = pcRef.current!;
 
           try {
             await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
@@ -420,6 +429,10 @@ export function useViewer() {
           const currentPc = pcRef.current;
           if (currentPc) {
             try {
+              if (currentPc.signalingState !== "have-local-offer") {
+                console.log(`[useViewer] Ignoring answer: signalingState is ${currentPc.signalingState}`);
+                break;
+              }
               await currentPc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
               isConnectingRef.current = false;
               hasReceivedAnswerRef.current = true;
