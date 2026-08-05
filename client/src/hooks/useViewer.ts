@@ -65,6 +65,13 @@ export function useViewer() {
   const iceCandidateBufferRef = useRef<any[]>([]);
   const hasReceivedAnswerRef = useRef(false);
   const metaRef = useRef<StreamMeta | null>(null); // Keep latest meta in a ref for use inside stable callbacks
+  // Accumulates tracks across ontrack events into one persistent stream.
+  // The broadcaster can add video and audio via different underlying
+  // MediaStream objects (e.g. camera stream vs. the audio mixer's stream),
+  // which makes them arrive as SEPARATE `ontrack` events with different
+  // event.streams[0] references. Building remoteStream from only the latest
+  // event's stream would silently drop whichever track arrived earlier.
+  const combinedStreamRef = useRef<MediaStream>(new MediaStream());
 
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [meta, setMeta] = useState<StreamMeta>({
@@ -109,6 +116,8 @@ export function useViewer() {
     iceCandidateBufferRef.current = [];
     hasReceivedAnswerRef.current = false;
     isConnectingRef.current = false;
+    // Drop any stale tracks from the old connection so a reconnect starts clean
+    combinedStreamRef.current.getTracks().forEach(t => combinedStreamRef.current.removeTrack(t));
   }, []);
 
   const createPeerConnection = useCallback(() => {
@@ -227,19 +236,29 @@ export function useViewer() {
   // Set up ontrack handler for a peer connection
   const setupTrackHandler = useCallback((pc: RTCPeerConnection) => {
     pc.ontrack = event => {
-      console.log("[useViewer] Received remote track:", event.track.kind);
-      const stream = event.streams[0];
-      if (stream) {
-        // Mobile optimization: ensure tracks are enabled
-        stream.getAudioTracks().forEach(t => { t.enabled = true; });
-        stream.getVideoTracks().forEach(t => { t.enabled = true; });
-        
-        // Force a new MediaStream object to ensure React detects the change when tracks are added
-        setRemoteStream(new MediaStream(stream.getTracks()));
-        
-        setConnectionState("connected");
-        reconnectAttemptRef.current = 0;
+      const track = event.track;
+      console.log("[useViewer] Received remote track:", track.kind);
+      track.enabled = true;
+
+      // Accumulate into the persistent combined stream rather than replacing
+      // remoteStream with just event.streams[0]. The broadcaster's video and
+      // audio tracks can arrive as separate stream events (different msid),
+      // so relying on a single event's stream can drop whichever track
+      // arrived first. Swap out any existing track of the same kind (covers
+      // reconnects / renegotiation) and keep everything else.
+      const combined = combinedStreamRef.current;
+      combined.getTracks()
+        .filter(t => t.kind === track.kind && t.id !== track.id)
+        .forEach(t => combined.removeTrack(t));
+      if (!combined.getTracks().includes(track)) {
+        combined.addTrack(track);
       }
+
+      // Force a new MediaStream object so React detects the change
+      setRemoteStream(new MediaStream(combined.getTracks()));
+
+      setConnectionState("connected");
+      reconnectAttemptRef.current = 0;
     };
   }, []);
 

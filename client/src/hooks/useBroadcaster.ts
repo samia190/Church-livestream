@@ -38,6 +38,14 @@ export function useBroadcaster() {
   const localStreamRef = useRef<MediaStream | null>(null);
   const originalCameraStreamRef = useRef<MediaStream | null>(null);
   const mixerProcessedStreamRef = useRef<MediaStream | null>(null);
+  // CRITICAL: one outbound MediaStream PER VIEWER, reused for every addTrack() call
+  // for that viewer. WebRTC groups tracks into a single remote stream on the
+  // receiving side based on which MediaStream object they were added with (msid).
+  // Video came from the camera stream and audio came from the mixer's separate
+  // MediaStreamAudioDestinationNode stream — two different objects — so without
+  // this, the viewer's ontrack fires twice with TWO different remote streams and
+  // ends up with only one track (usually video) surviving in state.
+  const outboundStreamsRef = useRef<Map<string, MediaStream>>(new Map());
   const sessionInfoRef = useRef<{ sessionId: string; title: string; description: string; initialMode: string } | null>(null);
   const wsReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wsReconnectAttemptRef = useRef(0);
@@ -93,6 +101,7 @@ export function useBroadcaster() {
     if (existingPc) {
       try { existingPc.close(); } catch (e) {}
       peersRef.current.delete(viewerId);
+      outboundStreamsRef.current.delete(viewerId);
     }
 
     const pc = new RTCPeerConnection({
@@ -106,11 +115,19 @@ export function useBroadcaster() {
     const stream = localStreamRef.current;
     const mixerAudio = mixerProcessedStreamRef.current;
 
+    // Single shared MediaStream used for BOTH addTrack() calls below, so the
+    // video and audio tracks are signaled to the viewer as one stream (same msid)
+    // instead of two separate ones. This is what makes them arrive together in
+    // a single `ontrack`-accumulated remote stream on the viewer's side.
+    const outboundStream = new MediaStream();
+    outboundStreamsRef.current.set(viewerId, outboundStream);
+
     if (stream) {
       // Add VIDEO track from the current stream
       const videoTrack = stream.getVideoTracks()[0];
       if (videoTrack) {
-        const sender = pc.addTrack(videoTrack, stream);
+        outboundStream.addTrack(videoTrack);
+        const sender = pc.addTrack(videoTrack, outboundStream);
         // Set adaptive bitrate degradation for mobile viewers
         if (sender) {
           try {
@@ -133,13 +150,15 @@ export function useBroadcaster() {
       if (mixerAudio) {
         const audioTrack = mixerAudio.getAudioTracks()[0];
         if (audioTrack) {
-          pc.addTrack(audioTrack, mixerAudio);
+          outboundStream.addTrack(audioTrack);
+          pc.addTrack(audioTrack, outboundStream);
         }
       } else {
         // Fallback: use audio from the local stream
         const audioTrack = stream.getAudioTracks()[0];
         if (audioTrack) {
-          pc.addTrack(audioTrack, stream);
+          outboundStream.addTrack(audioTrack);
+          pc.addTrack(audioTrack, outboundStream);
         }
       }
     }
@@ -166,10 +185,12 @@ export function useBroadcaster() {
           if (pc.connectionState === 'failed') {
             try { pc.close(); } catch (e) {}
             peersRef.current.delete(viewerId);
+            outboundStreamsRef.current.delete(viewerId);
           }
         }, 5000);
       } else if (state === "closed") {
         peersRef.current.delete(viewerId);
+        outboundStreamsRef.current.delete(viewerId);
       } else if (state === "disconnected") {
         try { pc.restartIce(); } catch (e) {}
       }
@@ -195,6 +216,7 @@ export function useBroadcaster() {
         }
         try { existingPc.close(); } catch (e) {}
         peersRef.current.delete(viewerId);
+        outboundStreamsRef.current.delete(viewerId);
       }
 
       const pc = createPeerForViewer(viewerId);
@@ -207,6 +229,40 @@ export function useBroadcaster() {
     },
     [createPeerForViewer]
   );
+
+  /**
+   * Renegotiate with a viewer whose peer connection is ALREADY connected —
+   * e.g. after adding a track (like the mixer's audio track) mid-broadcast.
+   *
+   * This is deliberately separate from sendOfferToViewer(), which tears down
+   * and recreates the peer connection. Recreating a live, working connection
+   * just to add one track would drop video too and force full ICE re-gathering.
+   * Instead we create a new offer on the SAME RTCPeerConnection so the browser
+   * only signals the delta (the newly added track) via a standard WebRTC
+   * renegotiation, which useViewer.ts already knows how to answer.
+   */
+  const renegotiateWithViewer = useCallback(async (viewerId: string) => {
+    const pc = peersRef.current.get(viewerId);
+    if (!pc) return;
+
+    if (pc.signalingState !== 'stable') {
+      // A negotiation is already in flight — retry shortly rather than
+      // colliding with it (glare).
+      setTimeout(() => renegotiateWithViewer(viewerId), 500);
+      return;
+    }
+
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      wsRef.current?.send(
+        JSON.stringify({ type: "webrtc-offer", targetViewerId: viewerId, sdp: offer })
+      );
+      console.log(`[useBroadcaster] Sent renegotiation offer to viewer ${viewerId}`);
+    } catch (err) {
+      console.error(`[useBroadcaster] Renegotiation failed for viewer ${viewerId}:`, err);
+    }
+  }, []);
 
   const handleViewerOffer = useCallback(
     async (viewerId: string, sdp: RTCSessionDescriptionInit) => {
@@ -246,6 +302,7 @@ export function useBroadcaster() {
         console.error(`[useBroadcaster] Failed to handle viewer offer from ${viewerId}:`, error);
         try { pc.close(); } catch (e) {}
         peersRef.current.delete(viewerId);
+        outboundStreamsRef.current.delete(viewerId);
         iceCandidateBuffersRef.current.delete(viewerId);
       }
     },
@@ -340,6 +397,7 @@ export function useBroadcaster() {
           if (pc) {
             try { pc.close(); } catch (e) {}
             peersRef.current.delete(msg.viewerId);
+            outboundStreamsRef.current.delete(msg.viewerId);
           }
           iceCandidateBuffersRef.current.delete(msg.viewerId);
           break;
@@ -454,6 +512,7 @@ export function useBroadcaster() {
     });
     peersRef.current.clear();
     iceCandidateBuffersRef.current.clear();
+    outboundStreamsRef.current.clear();
 
     localStreamRef.current = null;
     originalCameraStreamRef.current = null;
@@ -632,18 +691,27 @@ export function useBroadcaster() {
         if (audioSender) {
           await audioSender.replaceTrack(newAudioTrack);
         } else {
-          // If no audio track was initially present, we MUST add it
-          pc.addTrack(newAudioTrack, processedStream);
-          // Trigger a new offer to include the newly added track
-          await sendOfferToViewer(viewerId);
-          console.log(`[useBroadcaster] Added missing audio track and sent new offer to viewer ${viewerId}`);
+          // If no audio track was initially present, we MUST add it.
+          // Add it to the SAME outbound stream used for this viewer's video
+          // track (not `processedStream` directly) so it's grouped under the
+          // same msid — otherwise it arrives as a separate remote stream on
+          // the viewer's side and gets treated as unrelated to the video.
+          const outboundStream = outboundStreamsRef.current.get(viewerId) || new MediaStream();
+          outboundStreamsRef.current.set(viewerId, outboundStream);
+          outboundStream.addTrack(newAudioTrack);
+          pc.addTrack(newAudioTrack, outboundStream);
+          // Renegotiate on this SAME connection to signal the new track —
+          // do NOT use sendOfferToViewer here, since it tears down and
+          // rebuilds already-connected peers instead of renegotiating them.
+          await renegotiateWithViewer(viewerId);
+          console.log(`[useBroadcaster] Added missing audio track and renegotiated with viewer ${viewerId}`);
         }
       }
       console.log("[useBroadcaster] Mixer audio track updated on all peers");
     } catch (err) {
       console.error("[useBroadcaster] Failed to update mixer audio:", err);
     }
-  }, [isLive, sendOfferToViewer]);
+  }, [isLive, renegotiateWithViewer]);
 
   return {
     connected,
