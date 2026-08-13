@@ -1,0 +1,19 @@
+import { motion } from "framer-motion";
+import { HandHeart, MapPin, CalendarDays, Users, ArrowRight, Lock } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import Navigation from "@/components/Navigation";
+import { trpc } from "@/lib/trpc";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { getLoginUrl } from "@/const";
+import { toast } from "sonner";
+
+export default function FaithInAction() {
+  const { isAuthenticated } = useAuth();
+  const { data: opportunities = [], isLoading } = trpc.service.list.useQuery();
+  const { data: signups = [] } = trpc.service.mine.useQuery(undefined, { enabled: isAuthenticated });
+  const utils = trpc.useUtils();
+  const signup = trpc.service.signup.useMutation({ onSuccess: () => { utils.service.mine.invalidate(); toast.success("You are on the interest list. The ministry team will follow up with details."); } });
+  return <div className="min-h-screen text-foreground"><Navigation /><main className="pt-28 pb-20 px-4"><div className="max-w-6xl mx-auto"><motion.section initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} className="max-w-3xl mb-12"><p className="label-eyebrow mb-3">Love made visible</p><h1 className="text-4xl md:text-5xl font-bold mb-4">Faith in Action</h1><p className="text-lg text-muted-foreground leading-relaxed">Prayer changes how we see our neighbours. Service is where that love becomes visible. Find a responsible opportunity and offer your time, skills, presence, or encouragement.</p><Badge variant="outline" className="mt-4"><Lock className="w-3 h-3 mr-2" />People before points</Badge></motion.section>{isLoading ? <Card className="p-8 text-center text-muted-foreground">Finding opportunities…</Card> : <div className="grid md:grid-cols-2 gap-6">{opportunities.map(opportunity => { const joined = signups.some(signupItem => signupItem.opportunityId === String(opportunity._id)); return <Card key={String(opportunity._id)} className="p-6 border-border hover:border-ember/60 transition-colors"><Badge variant="secondary" className="capitalize mb-4">{opportunity.category}</Badge><h2 className="text-2xl font-bold mb-3">{opportunity.title}</h2><p className="text-muted-foreground leading-relaxed">{opportunity.description}</p><div className="space-y-2 mt-5 text-sm text-muted-foreground">{opportunity.location && <p className="flex items-center gap-2"><MapPin className="w-4 h-4 text-ember" />{opportunity.location}</p>}{opportunity.startsAt && <p className="flex items-center gap-2"><CalendarDays className="w-4 h-4 text-ember" />{new Date(opportunity.startsAt).toLocaleString()}</p>}<p className="flex items-center gap-2"><Users className="w-4 h-4 text-ember" />{opportunity.spots > 0 ? `${opportunity.spots} places` : "Open participation"}</p></div><div className="mt-6">{joined ? <Badge variant="outline">Interest recorded</Badge> : <Button disabled={signup.isPending} onClick={() => { if (!isAuthenticated) { window.location.assign(getLoginUrl()); return; } signup.mutate({ opportunityId: String(opportunity._id) }); }} className="bg-ember hover:bg-ember/90 text-ember-foreground">{isAuthenticated ? "I want to help" : "Sign in to help"}<ArrowRight className="w-4 h-4 ml-2" /></Button>}</div></Card>; })}</div>}<div className="mt-12 rounded-2xl border border-ember/30 bg-ember/10 p-6 md:p-8"><div className="flex gap-4"><HandHeart className="w-8 h-8 text-ember shrink-0" /><div><h2 className="text-2xl font-bold mb-2">A different kind of progress</h2><p className="text-muted-foreground leading-relaxed">We do not measure faith by points or rankings. We help people remember the stories of love, courage, and service that God is writing through the church.</p></div></div></div></div></main></div>;
+}

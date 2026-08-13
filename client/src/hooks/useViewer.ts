@@ -1,22 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNetwork, getAdaptiveStreamSettings } from "./useNetwork";
-
-// Professional WebRTC Infrastructure
-// STUN servers for NAT traversal + multiple redundant sources
-// TURN servers ensure connectivity through carrier-grade NATs (CGNAT) on 3G/4G/5G
-const ICE_SERVERS: RTCIceServer[] = [
-  { urls: "stun:stun.l.google.com:19302" },
-  { urls: "stun:stun1.l.google.com:19302" },
-  { urls: "stun:stun2.l.google.com:19302" },
-  { urls: "stun:stun3.l.google.com:19302" },
-  { urls: "stun:stun4.l.google.com:19302" },
-  { urls: "stun:stun.services.mozilla.com" },
-  { urls: "stun:stun.cloudflare.com:3478" },
-  // Public TURN relay — critical for mobile devices behind CGNAT
-  { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
-  { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
-  { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" },
-];
+import { ICE_SERVERS } from "@/lib/iceServers";
 
 export type BroadcastMode = "offline" | "pre-stream" | "live";
 
@@ -51,7 +35,8 @@ type ConnectionState = "connecting" | "connected" | "disconnected" | "reconnecti
  * 4. Buffer ICE candidates properly and flush them when the peer connection is ready
  * 5. Use ICE restarts instead of full connection teardown when ICE fails
  */
-export function useViewer() {
+export function useViewer(options: { enabled?: boolean } = {}) {
+  const enabled = options.enabled ?? true;
   const network = useNetwork();
   const wsRef = useRef<WebSocket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
@@ -65,13 +50,6 @@ export function useViewer() {
   const iceCandidateBufferRef = useRef<any[]>([]);
   const hasReceivedAnswerRef = useRef(false);
   const metaRef = useRef<StreamMeta | null>(null); // Keep latest meta in a ref for use inside stable callbacks
-  // Accumulates tracks across ontrack events into one persistent stream.
-  // The broadcaster can add video and audio via different underlying
-  // MediaStream objects (e.g. camera stream vs. the audio mixer's stream),
-  // which makes them arrive as SEPARATE `ontrack` events with different
-  // event.streams[0] references. Building remoteStream from only the latest
-  // event's stream would silently drop whichever track arrived earlier.
-  const combinedStreamRef = useRef<MediaStream>(new MediaStream());
 
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [meta, setMeta] = useState<StreamMeta>({
@@ -116,8 +94,6 @@ export function useViewer() {
     iceCandidateBufferRef.current = [];
     hasReceivedAnswerRef.current = false;
     isConnectingRef.current = false;
-    // Drop any stale tracks from the old connection so a reconnect starts clean
-    combinedStreamRef.current.getTracks().forEach(t => combinedStreamRef.current.removeTrack(t));
   }, []);
 
   const createPeerConnection = useCallback(() => {
@@ -236,29 +212,16 @@ export function useViewer() {
   // Set up ontrack handler for a peer connection
   const setupTrackHandler = useCallback((pc: RTCPeerConnection) => {
     pc.ontrack = event => {
-      const track = event.track;
-      console.log("[useViewer] Received remote track:", track.kind);
-      track.enabled = true;
-
-      // Accumulate into the persistent combined stream rather than replacing
-      // remoteStream with just event.streams[0]. The broadcaster's video and
-      // audio tracks can arrive as separate stream events (different msid),
-      // so relying on a single event's stream can drop whichever track
-      // arrived first. Swap out any existing track of the same kind (covers
-      // reconnects / renegotiation) and keep everything else.
-      const combined = combinedStreamRef.current;
-      combined.getTracks()
-        .filter(t => t.kind === track.kind && t.id !== track.id)
-        .forEach(t => combined.removeTrack(t));
-      if (!combined.getTracks().includes(track)) {
-        combined.addTrack(track);
+      console.log("[useViewer] Received remote track:", event.track.kind);
+      const stream = event.streams[0];
+      if (stream) {
+        // Mobile optimization: ensure tracks are enabled
+        stream.getAudioTracks().forEach(t => { t.enabled = true; });
+        stream.getVideoTracks().forEach(t => { t.enabled = true; });
+        setRemoteStream(stream);
+        setConnectionState("connected");
+        reconnectAttemptRef.current = 0;
       }
-
-      // Force a new MediaStream object so React detects the change
-      setRemoteStream(new MediaStream(combined.getTracks()));
-
-      setConnectionState("connected");
-      reconnectAttemptRef.current = 0;
     };
   }, []);
 
@@ -298,7 +261,7 @@ export function useViewer() {
             createViewerOffer(newPc);
           }
         }
-      }, 10000);
+      }, 4000);
     } catch (error) {
       console.error("[useViewer] Failed to create viewer offer:", error);
       isConnectingRef.current = false;
@@ -355,6 +318,7 @@ export function useViewer() {
             // proactively start the WebRTC handshake
             if (isNowLive && !pcRef.current && !isConnectingRef.current) {
               console.log('[useViewer] Stream is live, proactively starting WebRTC handshake');
+              isConnectingRef.current = true;
               const pc = createPeerConnection();
               setupTrackHandler(pc);
               createViewerOffer(pc);
@@ -402,22 +366,16 @@ export function useViewer() {
           // BROADCASTER-INITIATED: Broadcaster sent us an offer to answer
           isConnectingRef.current = true;
 
-          // If we already have a connection, check if we can handle this offer as a renegotiation
+          // If we already have a connection in progress, don't create a new one
+          // (this can happen with dual-mode — both sides try simultaneously)
           if (pcRef.current && (pcRef.current.connectionState === 'connected' || pcRef.current.connectionState === 'connecting')) {
-            // If we are in the middle of our own offer, we might have a collision (glare)
-            // For now, let's allow the broadcaster's offer to take precedence if we are stable
-            if (pcRef.current.signalingState !== "stable") {
-              console.log('[useViewer] Connection busy, ignoring broadcaster offer');
-              break;
-            }
-            console.log('[useViewer] Handling broadcaster offer as renegotiation');
-          } else {
-            cleanupPeerConnection();
-            const pc = createPeerConnection();
-            setupTrackHandler(pc);
+            console.log('[useViewer] Already have active connection, ignoring broadcaster offer');
+            break;
           }
 
-          const pc = pcRef.current!;
+          cleanupPeerConnection();
+          const pc = createPeerConnection();
+          setupTrackHandler(pc);
 
           try {
             await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
@@ -448,10 +406,6 @@ export function useViewer() {
           const currentPc = pcRef.current;
           if (currentPc) {
             try {
-              if (currentPc.signalingState !== "have-local-offer") {
-                console.log(`[useViewer] Ignoring answer: signalingState is ${currentPc.signalingState}`);
-                break;
-              }
               await currentPc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
               isConnectingRef.current = false;
               hasReceivedAnswerRef.current = true;
@@ -546,6 +500,11 @@ export function useViewer() {
   // which caused the WebSocket to be torn down and recreated every time the stream status changed,
   // triggering `window.location.reload()` in the onclose handler.
   useEffect(() => {
+    if (!enabled) {
+      cleanupPeerConnection();
+      setConnectionState("disconnected");
+      return;
+    }
     let ws: WebSocket | null = null;
     let isClosed = false;
 
@@ -607,7 +566,7 @@ export function useViewer() {
       }
       cleanupPeerConnection();
     };
-  }, [handleMessage, cleanupPeerConnection]);
+  }, [enabled, handleMessage, cleanupPeerConnection]);
 
   const sendChatMessage = useCallback((message: string, user: string = "Viewer") => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -621,6 +580,7 @@ export function useViewer() {
 
   // Manual reconnect function
   const reconnect = useCallback(() => {
+    if (!enabled) return;
     reconnectAttemptRef.current = 0;
     wsReconnectAttemptRef.current = 0;
     cleanupPeerConnection();
@@ -640,7 +600,7 @@ export function useViewer() {
         setConnectionState("disconnected");
       };
     }
-  }, [cleanupPeerConnection, handleMessage]);
+  }, [enabled, cleanupPeerConnection, handleMessage]);
 
   return {
     remoteStream,

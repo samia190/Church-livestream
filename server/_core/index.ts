@@ -9,6 +9,9 @@ import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { attachSignalingServer } from "./signaling.enhanced";
+import { attachPrayerRoomSignalingServer } from "./prayerRoomSignaling";
+import { registerPaymentRoutes } from "./paymentCallbacks";
+import { registerNotificationRoutes } from "./notifications";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -31,13 +34,39 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 
 async function startServer() {
   const app = express();
+  app.disable("x-powered-by");
+  app.use((_req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "SAMEORIGIN");
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    res.setHeader("Permissions-Policy", "camera=(self), microphone=(self), geolocation=()");
+    if (process.env.NODE_ENV === "production") res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+    next();
+  });
   const server = createServer(app);
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   registerStorageProxy(app);
   registerOAuthRoutes(app);
+  registerPaymentRoutes(app);
+  registerNotificationRoutes(app);
+
+  app.get("/healthz", (_req, res) => {
+    res.status(200).json({ ok: true, service: "nica-kibugu" });
+  });
+
+  app.get("/readyz", async (_req, res) => {
+    try {
+      const { connectToMongo } = await import("../mongoConnection");
+      await connectToMongo();
+      res.status(200).json({ ok: true, database: "ready" });
+    } catch {
+      res.status(503).json({ ok: false, database: "unavailable" });
+    }
+  });
   attachSignalingServer(server);
+  attachPrayerRoomSignalingServer(server);
   // tRPC API
   app.use(
     "/api/trpc",

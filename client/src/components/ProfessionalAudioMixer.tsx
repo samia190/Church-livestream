@@ -172,9 +172,9 @@ interface AudioScene {
 }
 
 interface AudioMixerRef {
-  initAudioContext: () => Promise<boolean>;
   getProcessedStream: () => MediaStream | null;
   getAudioContext: () => AudioContext | null;
+  ensureAudioReady: () => Promise<MediaStream | null>;
   registerSource: (sourceId: string, stream: MediaStream | null) => void;
   switchMicrophone: (deviceId: string) => Promise<MediaStream | null>;
 }
@@ -397,23 +397,10 @@ const ProfessionalAudioMixer = forwardRef<AudioMixerRef, ProfessionalAudioMixerP
 
     /* ── Initialize Audio Context & Full Processing Chain ──────────────────── */
 
-    const initAudioContext = useCallback(async () => {
-      console.log("[AudioMixer] Initializing AudioContext...");
-      try {
-        if (audioContextRef.current) {
-          console.log("[AudioMixer] AudioContext already exists, state:", audioContextRef.current.state);
-          if (audioContextRef.current.state === "suspended") {
-            await audioContextRef.current.resume();
-          }
-          setGraphInitialized(true);
-          return audioContextRef.current;
-        }
+    const initAudioContext = useCallback(() => {
+      if (audioContextRef.current) return audioContextRef.current;
 
-        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 48000 });
-        console.log("[AudioMixer] New AudioContext created, state:", ctx.state);
-      if (ctx.state === "suspended") {
-        await ctx.resume();
-      }
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 48000 });
       audioContextRef.current = ctx;
 
       // ── Processing Chain (in order) ───────────────────────────────────
@@ -680,15 +667,17 @@ const ProfessionalAudioMixer = forwardRef<AudioMixerRef, ProfessionalAudioMixerP
       }
 
       setGraphInitialized(true);
-      console.log("[AudioMixer] Audio graph initialized successfully");
-      toast.success("Professional Audio Studio Active");
       return ctx;
-    } catch (err) {
-      console.error("[AudioMixer] Failed to initialize audio graph:", err);
-      toast.error("Failed to start Audio Studio. Please try again.");
-      return null;
-    }
-    }, [onProcessedStream]); // Simplified dependencies to avoid unnecessary recreations; useEffects handle live updates
+    }, []); // Intentionally empty — initialize once
+
+    // Initialize the graph as soon as a real source exists. Previously this only
+    // happened after music/system-audio actions, leaving normal camera/pre-stream
+    // broadcasts without a processed audio destination.
+    useEffect(() => {
+      if (!graphInitialized && (mediaStream || preStreamAudioStream)) {
+        initAudioContext();
+      }
+    }, [graphInitialized, mediaStream, preStreamAudioStream, initAudioContext]);
 
     /* ── Load Auto-Tune AudioWorklet Processor ─────────────────────────────── */
     const loadAutoTune = useCallback(async () => {
@@ -1084,9 +1073,12 @@ const ProfessionalAudioMixer = forwardRef<AudioMixerRef, ProfessionalAudioMixerP
       
       try {
         const node = autoTuneRef.current;
-        node.parameters.get('enabled').value = effects.autoTuneEnabled ? 1 : 0;
-        node.parameters.get('amount').value = effects.autoTuneAmount / 100;
-        node.parameters.get('correctionSpeed').value = 0.3 + (effects.autoTuneAmount / 100) * 0.7;
+        const enabled = node.parameters.get('enabled');
+        const amount = node.parameters.get('amount');
+        const correctionSpeed = node.parameters.get('correctionSpeed');
+        if (enabled) enabled.value = effects.autoTuneEnabled ? 1 : 0;
+        if (amount) amount.value = effects.autoTuneAmount / 100;
+        if (correctionSpeed) correctionSpeed.value = 0.3 + (effects.autoTuneAmount / 100) * 0.7;
       } catch (err) {
         console.warn('[AudioMixer] Failed to update auto-tune parameters:', err);
       }
@@ -1526,29 +1518,56 @@ const ProfessionalAudioMixer = forwardRef<AudioMixerRef, ProfessionalAudioMixerP
       );
     }
 
+    const ensureAudioReady = useCallback(async () => {
+      const ctx = initAudioContext();
+      if (mediaStream && !micSourceRef.current && highPassRef.current) {
+        const source = ctx.createMediaStreamSource(mediaStream);
+        micSourceRef.current = source;
+        micGainRef.current ??= ctx.createGain();
+        micPanRef.current ??= ctx.createStereoPanner();
+        source.connect(micGainRef.current);
+        micGainRef.current.connect(micPanRef.current);
+        micPanRef.current.connect(highPassRef.current);
+      }
+      if (preStreamAudioStream && !preStreamSourceRef.current && highPassRef.current) {
+        const source = ctx.createMediaStreamSource(preStreamAudioStream);
+        preStreamSourceRef.current = source;
+        preStreamGainRef.current ??= ctx.createGain();
+        preStreamPanRef.current ??= ctx.createStereoPanner();
+        source.connect(preStreamGainRef.current);
+        preStreamGainRef.current.connect(preStreamPanRef.current);
+        preStreamPanRef.current.connect(highPassRef.current);
+      }
+      updateTrackGains();
+      if (ctx.state === "suspended") await ctx.resume();
+      return destinationRef.current?.stream || null;
+    }, [initAudioContext, mediaStream, preStreamAudioStream, updateTrackGains]);
+
     /* ── Expose ref methods ────────────────────────────────────────────────── */
     useImperativeHandle(ref, () => ({
-      initAudioContext: async () => {
-        console.log("[AudioMixer] Imperative initAudioContext called, graphInitialized:", graphInitialized);
-        if (!graphInitialized) {
-          await initAudioContext();
-          return true;
-        }
-        return false;
-      },
       getProcessedStream: () => destinationRef.current?.stream || null,
       getAudioContext: () => audioContextRef.current,
+      ensureAudioReady,
       registerSource: (sourceId: string, stream: MediaStream | null) => {
-        if (sourceId === "preStream" && stream) {
-          // Already handled by preStreamAudioStream prop
-        }
+        if (sourceId !== "preStream") return;
+        const ctx = initAudioContext();
+        try { preStreamSourceRef.current?.disconnect(); } catch {}
+        preStreamSourceRef.current = null;
+        if (!stream || stream.getAudioTracks().length === 0 || !highPassRef.current) return;
+        const source = ctx.createMediaStreamSource(stream);
+        preStreamSourceRef.current = source;
+        preStreamGainRef.current ??= ctx.createGain();
+        preStreamPanRef.current ??= ctx.createStereoPanner();
+        source.connect(preStreamGainRef.current);
+        preStreamGainRef.current.connect(preStreamPanRef.current);
+        preStreamPanRef.current.connect(highPassRef.current);
       },
       switchMicrophone: async (deviceId: string) => {
         const newStream = await switchMicrophoneDevice(deviceId);
         onMicrophoneSwitch?.(newStream);
         return newStream;
       },
-    }), [graphInitialized, initAudioContext, switchMicrophoneDevice, onMicrophoneSwitch]);
+    }));
 
     /* ── Tab Configuration ─────────────────────────────────────────────────── */
     const tabs = useMemo(() => [
@@ -1562,7 +1581,7 @@ const ProfessionalAudioMixer = forwardRef<AudioMixerRef, ProfessionalAudioMixerP
     /* ─── RENDER ───────────────────────────────────────────────────────────── */
 
     return (
-      <Card className="relative bg-slate-950 border-slate-800 shadow-2xl overflow-hidden flex flex-col h-full border-2">
+      <Card className="bg-slate-950 border-slate-800 shadow-2xl overflow-hidden flex flex-col h-full border-2">
 
         {/* ── Header ──────────────────────────────────────────────────── */}
         <div className="bg-slate-900/80 p-4 border-b border-slate-800 flex items-center justify-between">
@@ -1582,29 +1601,6 @@ const ProfessionalAudioMixer = forwardRef<AudioMixerRef, ProfessionalAudioMixerP
           </div>
 
           <div className="flex items-center gap-2">
-            {/* Power / Init */}
-            {!graphInitialized ? (
-              <Button
-                variant="default"
-                size="sm"
-                className="h-8 text-[10px] font-bold uppercase gap-2 bg-amber-600 hover:bg-amber-700 text-white animate-pulse"
-                onClick={() => initAudioContext()}
-              >
-                <Power className="w-3 h-3" />
-                Start Audio Studio
-              </Button>
-            ) : (
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-8 text-[10px] font-bold uppercase gap-2 border-green-500/30 bg-green-500/10 text-green-400"
-                onClick={() => toast.info("Audio engine is active")}
-              >
-                <Power className="w-3 h-3" />
-                Active
-              </Button>
-            )}
-
             {/* Recording */}
             <Button
               variant="outline"
@@ -1643,27 +1639,6 @@ const ProfessionalAudioMixer = forwardRef<AudioMixerRef, ProfessionalAudioMixerP
             </Button>
           </div>
         </div>
-
-        {/* ── Initialization Overlay ──────────────────────────────────── */}
-        {!graphInitialized && (
-          <div className="absolute inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center">
-            <div className="bg-primary/20 p-4 rounded-full mb-4">
-              <Waves className="w-12 h-12 text-primary animate-pulse" />
-            </div>
-            <h3 className="text-xl font-black text-white uppercase italic tracking-tight mb-2">Pro Audio Engine Offline</h3>
-            <p className="text-slate-400 text-sm max-w-xs mb-6">
-              The professional audio processing chain requires activation to route your microphone and media audio.
-            </p>
-            <Button 
-              size="lg" 
-              className="bg-primary hover:bg-primary/90 text-white font-black uppercase italic tracking-widest px-8 py-6 rounded-2xl shadow-xl shadow-primary/20 transition-all hover:-translate-y-1 active:translate-y-0"
-              onClick={() => initAudioContext()}
-            >
-              <Power className="w-5 h-5 mr-2" />
-              Start Audio Studio
-            </Button>
-          </div>
-        )}
 
         {/* ── Scene Presets Dropdown ──────────────────────────────────── */}
         <AnimatePresence>
@@ -1979,6 +1954,7 @@ const ProfessionalAudioMixer = forwardRef<AudioMixerRef, ProfessionalAudioMixerP
                     { label: "Treble", freq: "12kHz", key: "treble", type: "highshelf" },
                   ].map(band => {
                     const led = leds[band.key as keyof typeof leds];
+                    const eqValue = Number(effects[band.key as keyof AudioEffects] ?? 0);
                     return (
                       <div key={band.key} className="flex-1 flex flex-col items-center gap-2">
                         {led && <NodeLED node={led} size="sm" />}
@@ -1987,9 +1963,9 @@ const ProfessionalAudioMixer = forwardRef<AudioMixerRef, ProfessionalAudioMixerP
                           <motion.div
                             className="w-full rounded-full"
                             animate={{
-                              height: `${Math.abs(effects[band.key as keyof AudioEffects] / 12) * 50}%`,
-                              backgroundColor: (effects[band.key as keyof AudioEffects] || 0) > 0 ? '#3b82f6' : '#ef4444',
-                              bottom: (effects[band.key as keyof AudioEffects] || 0) >= 0 ? '50%' : `${50 - Math.abs(effects[band.key as keyof AudioEffects] / 12) * 50}%`,
+                              height: `${Math.abs(eqValue / 12) * 50}%`,
+                              backgroundColor: eqValue > 0 ? '#3b82f6' : '#ef4444',
+                              bottom: eqValue >= 0 ? '50%' : `${50 - Math.abs(eqValue / 12) * 50}%`,
                             }}
                             transition={{ duration: 0.15 }}
                           />
@@ -1997,15 +1973,15 @@ const ProfessionalAudioMixer = forwardRef<AudioMixerRef, ProfessionalAudioMixerP
                         <p className="text-[9px] font-bold text-white uppercase">{band.label}</p>
                         <p className="text-[8px] font-mono text-slate-500">{band.freq}</p>
                         <p className={`text-[9px] font-mono ${
-                          (effects[band.key as keyof AudioEffects] || 0) > 0 ? 'text-blue-400' :
-                          (effects[band.key as keyof AudioEffects] || 0) < 0 ? 'text-red-400' : 'text-slate-600'
+                          eqValue > 0 ? 'text-blue-400' :
+                          eqValue < 0 ? 'text-red-400' : 'text-slate-600'
                         }`}>
-                          {(effects[band.key as keyof AudioEffects] || 0) > 0 ? '+' : ''}{effects[band.key as keyof AudioEffects]}dB
+                          {eqValue > 0 ? '+' : ''}{eqValue}dB
                         </p>
                         <div className="w-full" style={{ height: 80 }}>
                           <Slider
                             orientation="vertical"
-                            value={[(effects[band.key as keyof AudioEffects] + 12) * (100 / 24)]}
+                            value={[(eqValue + 12) * (100 / 24)]}
                             min={0}
                             max={100}
                             onValueChange={([val]) => setEffects(prev => ({

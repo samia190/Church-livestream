@@ -42,7 +42,7 @@ const floatingVariants = {
     scale: [1, 1, 1, 1, 1],
     transition: {
       duration: 14,
-      ease: "easeInOut",
+      ease: "easeInOut" as const,
       repeat: Infinity,
     },
   },
@@ -344,6 +344,11 @@ export default function Home() {
               <Link href="/give">
                 <Button size="lg" variant="outline" className="border-ember/50 text-ember hover:bg-ember/10">
                   Support Our Ministry
+                </Button>
+              </Link>
+              <Link href="/journey">
+                <Button size="lg" variant="outline" className="border-primary/50 hover:bg-primary/10">
+                  Begin Your Journey
                 </Button>
               </Link>
             </div>

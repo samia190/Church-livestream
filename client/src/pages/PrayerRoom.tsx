@@ -1,0 +1,25 @@
+import { motion } from "framer-motion";
+import { HeartHandshake, Lock, Send, Sparkles } from "lucide-react";
+import { useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
+import Navigation from "@/components/Navigation";
+import { trpc } from "@/lib/trpc";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { getLoginUrl } from "@/const";
+import { toast } from "sonner";
+
+export default function PrayerRoom() {
+  const { isAuthenticated, loading } = useAuth();
+  const { data: requests = [], isLoading } = trpc.prayer.mine.useQuery(undefined, { enabled: isAuthenticated });
+  const utils = trpc.useUtils();
+  const submitPrayer = trpc.prayer.submitPrivate.useMutation({ onSuccess: () => { utils.prayer.mine.invalidate(); setPrayerRequest(""); setIsPublic(false); toast.success("Your prayer request has been received. We are praying with you."); } });
+  const [prayerRequest, setPrayerRequest] = useState("");
+  const [isPublic, setIsPublic] = useState(false);
+
+  if (!loading && !isAuthenticated) return <div className="min-h-screen text-foreground"><Navigation /><main className="pt-32 px-4"><Card className="max-w-xl mx-auto p-8 text-center glass-panel border-0"><Lock className="w-10 h-10 text-ember mx-auto mb-4" /><h1 className="text-3xl font-bold mb-3">Enter the Prayer Room</h1><p className="text-muted-foreground mb-6">Sign in to keep a private record of your prayer requests and receive pastoral follow-up when available.</p><Button onClick={() => window.location.assign(getLoginUrl())} className="bg-ember hover:bg-ember/90 text-ember-foreground">Sign in to continue</Button></Card></main></div>;
+
+  return <div className="min-h-screen text-foreground"><Navigation /><main className="pt-28 pb-20 px-4"><div className="max-w-5xl mx-auto"><motion.section initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} className="mb-10"><p className="label-eyebrow mb-3">You do not carry it alone</p><h1 className="text-4xl md:text-5xl font-bold mb-4">The Prayer Room</h1><p className="text-lg text-muted-foreground max-w-2xl leading-relaxed">Bring your honest prayer. It will be treated with care, kept private by default, and held by a church community that wants to walk with you.</p><Badge variant="outline" className="mt-4"><Lock className="w-3 h-3 mr-2" />Private by default</Badge></motion.section><div className="grid lg:grid-cols-[0.9fr_1.1fr] gap-8 items-start"><Card className="p-6 glass-panel border-0 lg:sticky lg:top-24"><div className="flex items-center gap-3 mb-5"><HeartHandshake className="w-7 h-7 text-ember" /><h2 className="text-xl font-bold">Share a prayer</h2></div><form onSubmit={event => { event.preventDefault(); if (prayerRequest.trim()) submitPrayer.mutate({ prayerRequest: prayerRequest.trim(), isPublic }); }} className="space-y-4"><Textarea rows={10} maxLength={10000} required value={prayerRequest} onChange={event => setPrayerRequest(event.target.value)} placeholder="What would you like us to pray with you about?" /><label className="flex items-start gap-3 text-sm text-muted-foreground"><input type="checkbox" checked={isPublic} onChange={event => setIsPublic(event.target.checked)} className="mt-1 accent-ember" /><span>I freely consent to this request being considered for a moderated public prayer list. I understand I can leave it private.</span></label><Button type="submit" disabled={submitPrayer.isPending || !prayerRequest.trim()} className="w-full bg-ember hover:bg-ember/90 text-ember-foreground"><Send className="w-4 h-4 mr-2" />{submitPrayer.isPending ? "Sending…" : "Send prayer request"}</Button></form><div className="mt-6 rounded-xl bg-primary/10 p-4 text-sm text-muted-foreground"><Sparkles className="w-4 h-4 text-primary mb-2" /><p>If you are in immediate danger or crisis, contact local emergency services or a qualified professional. This prayer room is not an emergency service.</p></div></Card><section>{isLoading ? <Card className="p-8 text-center text-muted-foreground">Opening your prayer history…</Card> : requests.length === 0 ? <Card className="p-8 text-center glass-panel border-0"><HeartHandshake className="w-10 h-10 text-ember mx-auto mb-4" /><h2 className="text-xl font-bold mb-2">Your prayer history is empty</h2><p className="text-muted-foreground">When you share a prayer, you will be able to return here and remember how God has met you.</p></Card> : <div className="space-y-4">{requests.map(request => <Card key={String(request._id)} className="p-6 border-border"><div className="flex justify-between gap-4 mb-3"><p className="text-xs text-muted-foreground">{new Date(request.createdAt).toLocaleString()}</p><Badge variant={request.status === "approved" ? "default" : "outline"} className="capitalize">{request.status}</Badge></div><p className="whitespace-pre-wrap leading-relaxed">{request.prayerRequest}</p><p className="text-xs text-muted-foreground mt-4">{request.isPublic ? "Submitted with public-list consent" : "Private prayer request"}</p></Card>)}</div>}</section></div></div></main></div>;
+}

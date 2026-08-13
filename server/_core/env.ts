@@ -7,6 +7,12 @@ export const ENV = {
   isProduction: process.env.NODE_ENV === "production",
   forgeApiUrl: process.env.BUILT_IN_FORGE_API_URL ?? "",
   forgeApiKey: process.env.BUILT_IN_FORGE_API_KEY ?? "",
+  notificationWebhookUrl: process.env.NOTIFICATION_WEBHOOK_URL ?? "",
+  notificationWebhookToken: process.env.NOTIFICATION_WEBHOOK_TOKEN ?? "",
+  notificationCronSecret: process.env.NOTIFICATION_CRON_SECRET ?? "",
+  liveKitUrl: process.env.LIVEKIT_URL ?? "",
+  liveKitApiKey: process.env.LIVEKIT_API_KEY ?? "",
+  liveKitApiSecret: process.env.LIVEKIT_API_SECRET ?? "",
 };
 
 // Restream.io configuration

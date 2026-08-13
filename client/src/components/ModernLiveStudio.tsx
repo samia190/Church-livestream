@@ -19,6 +19,7 @@ import {
 import { toast } from 'sonner';
 import { trpc } from '@/lib/trpc';
 import { useBroadcaster } from '@/hooks/useBroadcaster';
+import { useLiveKitDirector, type ContributorFeed } from '@/hooks/useLiveKitDirector';
 import { useCameraDevices } from '@/hooks/useCameraDevices';
 
 interface ChatMessage {
@@ -41,6 +42,20 @@ interface SectionState {
 
 type OverlaySource = 'camera' | 'media' | null;
 
+const ContributorPreview: React.FC<{ feed: ContributorFeed }> = ({ feed }) => {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    const element = videoRef.current;
+    if (!element) return;
+    element.srcObject = feed.stream;
+    void element.play().catch(() => undefined);
+    return () => {
+      if (element.srcObject === feed.stream) element.srcObject = null;
+    };
+  }, [feed.stream]);
+  return <video ref={videoRef} autoPlay muted playsInline className="aspect-video w-full object-cover bg-black" aria-label={`${feed.name} camera`} />;
+};
+
 export const ModernLiveStudio: React.FC = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isLive, setIsLive] = useState(false);
@@ -62,7 +77,7 @@ export const ModernLiveStudio: React.FC = () => {
   const [streamDescription, setStreamDescription] = useState('Join us for worship and prayer');
 
   // Platforms
-  const { data: connectedPlatforms, refetch: refetchPlatforms } = trpc.streaming.getPlatforms.useQuery();
+  const { data: connectedPlatforms, refetch: refetchPlatforms, isLoading: platformsLoading, error: platformsError } = trpc.streaming.getPlatforms.useQuery();
   const { mutateAsync: addPlatformMutation, isPending: addPlatformPending } = trpc.streaming.addPlatform.useMutation();
   const { mutateAsync: removePlatformMutation } = trpc.streaming.removePlatform.useMutation();
   const [platformForm, setPlatformForm] = useState<{ platform: 'youtube' | 'facebook' | 'instagram' | 'tiktok' | 'twitter' | 'twitch'; accountName: string; accessToken: string } | null>(null);
@@ -109,6 +124,19 @@ export const ModernLiveStudio: React.FC = () => {
   }, [stream, activeOverlayStream]);
 
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [liveKitBroadcastMode, setLiveKitBroadcastMode] = useState<'pre-stream' | 'live'>('live');
+  const liveKitUrlConfigured = Boolean(import.meta.env.VITE_LIVEKIT_URL);
+  const liveKitStatus = trpc.streaming.liveKitStatus.useQuery(undefined, { enabled: liveKitUrlConfigured, retry: false });
+  const liveKitEnabled = liveKitUrlConfigured && liveKitStatus.data?.enabled === true;
+  const liveKit = useLiveKitDirector();
+  const liveKitHostToken = trpc.streaming.liveKitHostToken.useMutation();
+  const cameraInvitesQuery = trpc.streaming.listCameraInvitations.useQuery(
+    { sessionId: sessionId ?? "pending" },
+    { enabled: Boolean(liveKitEnabled && sessionId), refetchInterval: 15_000 }
+  );
+  const { mutateAsync: createCameraInviteMutation } = trpc.streaming.createCameraInvitation.useMutation();
+  const { mutateAsync: revokeCameraInviteMutation } = trpc.streaming.revokeCameraInvitation.useMutation();
+  const [lastCameraInvite, setLastCameraInvite] = useState<{ label: string; url: string; expiresAt: Date } | null>(null);
   const {
     viewerCount,
     streamStats,
@@ -125,9 +153,19 @@ export const ModernLiveStudio: React.FC = () => {
     sendChatMessage,
     deleteChatMessage
   } = useBroadcaster();
+  const displayedViewerCount = liveKitEnabled ? liveKit.viewerCount : viewerCount;
+  const displayedBroadcastMode = liveKitEnabled ? liveKitBroadcastMode : broadcastMode;
+  const displayedChatMessages = liveKitEnabled ? liveKit.chatMessages : liveChatMessages;
+  const sendStudioChat = liveKitEnabled ? liveKit.sendChatMessage : sendChatMessage;
+  const deleteStudioChat = liveKitEnabled ? liveKit.deleteChatMessage : deleteChatMessage;
+  const contributorFeeds = liveKitEnabled ? liveKit.contributorFeeds : [];
+  const selectedFeedIdentity = liveKitEnabled ? liveKit.selectedFeedIdentity : null;
 
   const { mutateAsync: goLiveMutation, isPending: goLivePending } = trpc.streaming.goLive.useMutation();
+  const { mutateAsync: startMultiPlatformBroadcastMutation } = trpc.streaming.startMultiPlatformBroadcast.useMutation();
+  const { mutateAsync: stopMultiPlatformBroadcastMutation } = trpc.streaming.stopMultiPlatformBroadcast.useMutation();
   const { mutateAsync: endLiveMutation } = trpc.streaming.endLive.useMutation();
+  const [externalBroadcastId, setExternalBroadcastId] = useState<string | null>(null);
 
   // Keep displayed viewer count synced
   const peakViewersRef = useRef(0);
@@ -135,24 +173,31 @@ export const ModernLiveStudio: React.FC = () => {
     if (isLive) {
       setStats(prev => ({
         ...prev,
-        viewers: viewerCount,
+        viewers: displayedViewerCount,
         bitrate: streamStats.bitrate > 0 ? `${streamStats.bitrate.toFixed(1)} Mbps` : prev.bitrate,
         fps: streamStats.fps || prev.fps,
         resolution: streamStats.resolution || prev.resolution,
         dropped: streamStats.packetsLost || prev.dropped,
       }));
-      peakViewersRef.current = Math.max(peakViewersRef.current, viewerCount);
+      peakViewersRef.current = Math.max(peakViewersRef.current, displayedViewerCount);
     }
-  }, [isLive, viewerCount, streamStats]);
+  }, [isLive, displayedViewerCount, streamStats]);
 
   // When mixer produces a new processed stream, update the broadcaster's audio
   useEffect(() => {
     if (isLive && mixerProcessedStream && broadcastAudioReady) {
-      updateMixerAudio(mixerProcessedStream);
+      if (liveKitEnabled && liveKit.isLive) void liveKit.replaceAudioTrack(mixerProcessedStream);
+      else void updateMixerAudio(mixerProcessedStream);
     }
-  }, [mixerProcessedStream, isLive, broadcastAudioReady, updateMixerAudio]);
+  }, [mixerProcessedStream, isLive, broadcastAudioReady, updateMixerAudio, liveKitEnabled, liveKit.isLive, liveKit.replaceAudioTrack]);
 
   const handleGoLive = async () => {
+    let createdSessionId: string | null = null;
+    let createdExternalBroadcastId: string | null = null;
+    if (liveKitUrlConfigured && liveKitStatus.isLoading) {
+      toast.info('Checking the scalable broadcast service. Please try again in a moment.');
+      return;
+    }
     if (!streamTitle.trim()) {
       toast.error('Please enter a stream title');
       return;
@@ -163,16 +208,32 @@ export const ModernLiveStudio: React.FC = () => {
     }
 
     try {
-      // Initialize the professional audio engine (requires user gesture)
-      if (mixerRef.current) {
-        await mixerRef.current.initAudioContext();
+      // Resume the Web Audio graph during the button gesture and obtain a real
+      // destination track before any awaited backend call can create a race.
+      const processedAudio = await mixerRef.current?.ensureAudioReady?.();
+      const broadcastAudio = processedAudio?.getAudioTracks().length ? processedAudio : mixerProcessedStream;
+      if (!broadcastAudio?.getAudioTracks().length) {
+        toast.error('Audio mixer is not ready. Allow microphone/audio access and try again.');
+        return;
       }
-
       const result = await goLiveMutation({
         title: streamTitle,
         description: streamDescription,
       });
+                  createdSessionId = result.sessionId;
       setSessionId(result.sessionId);
+      const platforms = (connectedPlatforms ?? [])
+        .map(platform => platform.platform)
+        .filter((platform): platform is 'youtube' | 'instagram' => platform === 'youtube' || platform === 'instagram');
+      if (platforms.length > 0) {
+        const external = await startMultiPlatformBroadcastMutation({
+          title: streamTitle,
+          description: streamDescription,
+          platforms,
+        });
+        createdExternalBroadcastId = external.broadcastId ?? null;
+        setExternalBroadcastId(createdExternalBroadcastId);
+      }
 
       let initialStream = stream;
       let initialMode: 'live' | 'pre-stream' = 'live';
@@ -184,41 +245,91 @@ export const ModernLiveStudio: React.FC = () => {
         setIsOverlayActive(true);
       }
 
-      // Pass the mixer-processed stream so the broadcaster uses it as the audio source
-      const currentMixerStream = mixerRef.current?.getProcessedStream();
-      
-      startBroadcast(initialStream, {
-        sessionId: result.sessionId,
-        title: streamTitle,
-        description: streamDescription,
-        initialMode,
-        originalCameraStream: stream,
-        mixerProcessedStream: currentMixerStream || mixerProcessedStream,
-      });
+      if (liveKitEnabled) {
+        const hostAccess = await liveKitHostToken.mutateAsync({ sessionId: result.sessionId, identity: crypto.randomUUID() });
+        await liveKit.start({ production: hostAccess.production, program: hostAccess.program, videoStream: initialStream, audioStream: broadcastAudio });
+        setLiveKitBroadcastMode(initialMode);
+      } else {
+        // Pass the mixer-processed stream so the fallback broadcaster uses it as the audio source.
+        startBroadcast(initialStream, {
+          sessionId: result.sessionId,
+          title: streamTitle,
+          description: streamDescription,
+          initialMode,
+          originalCameraStream: stream,
+          mixerProcessedStream: broadcastAudio,
+        });
+      }
 
       setIsLive(true);
       setBroadcastAudioReady(true);
       toast.success(initialMode === 'pre-stream' ? 'Broadcast started with Media' : 'You are now LIVE!');
     } catch (err) {
-      toast.error('Failed to go live');
+            if (createdExternalBroadcastId) {
+        await stopMultiPlatformBroadcastMutation({ broadcastId: createdExternalBroadcastId }).catch(() => undefined);
+      }
+      if (createdSessionId) {
+        await endLiveMutation({ sessionId: createdSessionId }).catch(() => undefined);
+      }
+      setSessionId(null);
+      setExternalBroadcastId(null);
+      toast.error(err instanceof Error ? err.message : 'Failed to go live');
     }
   };
-
   const handleStopLive = async () => {
-    stopBroadcast();
+    if (liveKitEnabled) await liveKit.stop();
+    else stopBroadcast();
     setIsLive(false);
     setIsOverlayActive(false);
     setOverlaySource(null);
     setActiveOverlayStream(null);
     setBroadcastAudioReady(false);
     setPreStreamAudioStream(null);
+    if (externalBroadcastId) {
+      try {
+        await stopMultiPlatformBroadcastMutation({ broadcastId: externalBroadcastId });
+      } catch (err) {
+        toast.error('External platform broadcast could not be stopped');
+      }
+    }
     if (sessionId !== null) {
       try {
         await endLiveMutation({ sessionId });
-      } catch (err) {}
+      } catch (err) {
+        toast.error('Live session status could not be updated');
+      }
     }
+    setExternalBroadcastId(null);
     setSessionId(null);
     toast.success('Broadcast ended');
+  };
+
+  const handleAddPlatform = async () => {
+    const platform = window.prompt('Platform (youtube or instagram)', 'youtube')?.trim().toLowerCase();
+    if (platform !== 'youtube' && platform !== 'instagram') {
+      toast.error('Only YouTube and Instagram are currently supported by the Restream event API');
+      return;
+    }
+    const accountName = window.prompt('Account name');
+    const accessToken = window.prompt('Provider access token');
+    if (!accountName || !accessToken) return;
+    try {
+      await addPlatformMutation({ platform, accountName, accessToken });
+      await refetchPlatforms();
+      toast.success(`${platform} connected`);
+    } catch {
+      toast.error(`Unable to connect ${platform}`);
+    }
+  };
+
+  const handleRemovePlatform = async (id: string) => {
+    try {
+      await removePlatformMutation({ id });
+      await refetchPlatforms();
+      toast.success('Platform disconnected');
+    } catch {
+      toast.error('Unable to disconnect platform');
+    }
   };
 
   /**
@@ -227,12 +338,6 @@ export const ModernLiveStudio: React.FC = () => {
    */
   const handleShowMediaToViewers = async () => {
     if (!preStreamRef.current) return;
-
-    // Ensure audio mixer is initialized
-    if (mixerRef.current) {
-      await mixerRef.current.initAudioContext();
-    }
-
     const mediaStream = await preStreamRef.current.captureStream();
     if (!mediaStream) {
       toast.error('Start playing media first');
@@ -270,7 +375,12 @@ export const ModernLiveStudio: React.FC = () => {
           const mixerAudio = mixerProcessedStream.getAudioTracks()[0];
           if (mixerAudio) videoOnlyForBroadcast.addTrack(mixerAudio);
         }
-        await replaceStream(videoOnlyForBroadcast);
+        if (liveKitEnabled) {
+          await liveKit.replaceVideoTrack(videoOnlyForBroadcast);
+          setLiveKitBroadcastMode('pre-stream');
+        } else {
+          await replaceStream(videoOnlyForBroadcast);
+        }
       } catch (err) {
         toast.error('Failed to switch to media');
       }
@@ -290,15 +400,21 @@ export const ModernLiveStudio: React.FC = () => {
 
     if (isLive) {
       try {
-        // If we're in pre-stream mode, use restoreOriginalStream to properly restore live mode
-        if (broadcastMode === 'pre-stream') {
-          await restoreOriginalStream();
-          toast.success('Switching to Camera — now LIVE!');
-        } else {
-          // Already in live mode, just update the local stream with camera video
-          updateLocalStream(stream);
-          toast.success('Switching to Camera — audio stays from mixer');
+        // Create a combined stream with camera video + mixer audio
+        const broadcastStream = new MediaStream();
+        const videoTrack = stream.getVideoTracks()[0];
+        if (videoTrack) broadcastStream.addTrack(videoTrack);
+        if (mixerProcessedStream) {
+          const mixerAudio = mixerProcessedStream.getAudioTracks()[0];
+          if (mixerAudio) broadcastStream.addTrack(mixerAudio);
         }
+        if (liveKitEnabled) {
+          await liveKit.replaceVideoTrack(broadcastStream);
+          setLiveKitBroadcastMode('live');
+        } else {
+          await replaceStream(broadcastStream);
+        }
+        toast.success('Switching to Camera — audio stays from mixer');
       } catch (err) {
         toast.error('Failed to switch to camera');
       }
@@ -307,7 +423,12 @@ export const ModernLiveStudio: React.FC = () => {
 
   const handleGoLiveFromPreStream = async () => {
     try {
-      await goLiveFromPreStream();
+      if (liveKitEnabled && stream) {
+        await liveKit.replaceVideoTrack(stream);
+        setLiveKitBroadcastMode('live');
+      } else {
+        await goLiveFromPreStream();
+      }
       setIsOverlayActive(false);
       setOverlaySource('camera');
       setActiveOverlayStream(null);
@@ -321,7 +442,10 @@ export const ModernLiveStudio: React.FC = () => {
   const handleSwitchCamera = async (deviceId: string) => {
     try {
       const newStream = await camera.switchToDevice(deviceId);
-      if (isLive && !isOverlayActive) updateLocalStream(newStream);
+      if (isLive && !isOverlayActive) {
+        if (liveKitEnabled) await liveKit.replaceVideoTrack(newStream);
+        else updateLocalStream(newStream);
+      }
       toast.success('Camera switched');
     } catch (err) {
       toast.error('Switch failed');
@@ -331,7 +455,10 @@ export const ModernLiveStudio: React.FC = () => {
   const handleFlipCamera = async () => {
     try {
       const newStream = await camera.flipFacing();
-      if (isLive && !isOverlayActive) updateLocalStream(newStream);
+      if (isLive && !isOverlayActive) {
+        if (liveKitEnabled) await liveKit.replaceVideoTrack(newStream);
+        else updateLocalStream(newStream);
+      }
     } catch (err) {}
   };
 
@@ -368,7 +495,7 @@ export const ModernLiveStudio: React.FC = () => {
         const combined = new MediaStream();
         const videoTrack = stream.getVideoTracks()[0];
         if (videoTrack) combined.addTrack(videoTrack);
-        newMicStream.getAudioTracks().forEach(t => combined.addTrack(t));
+        newMicStream.getAudioTracks().forEach((t: MediaStreamTrack) => combined.addTrack(t));
         if (videoRef.current) videoRef.current.srcObject = combined;
       }
     }
@@ -377,7 +504,7 @@ export const ModernLiveStudio: React.FC = () => {
 
   const handleSendChat = () => {
     if (!newMessage.trim()) return;
-    sendChatMessage(newMessage, 'Admin');
+    sendStudioChat(newMessage, 'Admin');
     setNewMessage('');
   };
 
@@ -407,7 +534,7 @@ export const ModernLiveStudio: React.FC = () => {
    */
   const handleMixerProcessedStream = useCallback((processedStream: MediaStream | null) => {
     setMixerProcessedStream(processedStream);
-    // The useEffect above will call updateMixerAudio when isLive && broadcastAudioReady
+      // The useEffect above will update the active media transport when isLive && broadcastAudioReady.
   }, []);
 
   const handleMonitorMuteChange = useCallback((muted: boolean) => {
@@ -415,6 +542,42 @@ export const ModernLiveStudio: React.FC = () => {
     toast.info(muted ? 'Monitor muted — viewers still hear full audio' : 'Monitor unmuted — you hear the processed audio');
   }, []);
 
+  const handleCreateCameraInvite = async () => {
+    if (!sessionId || !liveKitEnabled) {
+      toast.error('Start the scalable broadcast before inviting a mobile camera');
+      return;
+    }
+    const label = window.prompt('Camera label (for example: Pulpit, Choir, or Prayer Team)', 'Mobile camera');
+    if (!label?.trim()) return;
+    try {
+      const invite = await createCameraInviteMutation({ sessionId, label: label.trim(), expiresInMinutes: 240 });
+      const url = `${window.location.origin}/contribute/${invite.inviteToken}?sessionId=${encodeURIComponent(sessionId)}`;
+      setLastCameraInvite({ label: invite.label, url, expiresAt: new Date(invite.expiresAt) });
+      await navigator.clipboard.writeText(url).catch(() => undefined);
+      await cameraInvitesQuery.refetch();
+      toast.success('Camera invite created and copied to the clipboard');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Unable to create camera invite');
+    }
+  };
+  const handleRevokeCameraInvite = async (invitationId: string) => {
+    if (!sessionId) return;
+    try {
+      await revokeCameraInviteMutation({ sessionId, invitationId });
+      await cameraInvitesQuery.refetch();
+      toast.success('Camera invite revoked');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Unable to revoke camera invite');
+    }
+  };
+  const handleSelectContributor = async (identity: string) => {
+    try {
+      await liveKit.selectContributorFeed(identity);
+      toast.success('Camera is now on the public program feed');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Unable to switch program camera');
+    }
+  };
   const handleShare = async () => {
     const url = `${window.location.origin}/watch-live`;
     try {
@@ -450,7 +613,7 @@ export const ModernLiveStudio: React.FC = () => {
               <div>
                 <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Status</p>
                 <p className={`text-sm font-bold ${isLive ? 'text-white' : 'text-slate-400'}`}>
-                  {isLive ? (broadcastMode === 'pre-stream' ? 'PRE-STREAM' : 'LIVE ON AIR') : 'READY'}
+                  {isLive ? (displayedBroadcastMode === 'pre-stream' ? 'PRE-STREAM' : 'LIVE ON AIR') : 'READY'}
                 </p>
               </div>
             </Card>
@@ -499,7 +662,7 @@ export const ModernLiveStudio: React.FC = () => {
                 <div className="flex items-center gap-2 bg-red-600 px-3 py-1.5 rounded-lg shadow-lg">
                   <div className="w-2 h-2 rounded-full bg-white animate-pulse" />
                   <span className="text-[10px] font-black uppercase text-white tracking-widest">
-                    {broadcastMode === 'pre-stream' ? 'Pre-Stream' : 'LIVE'}
+                    {displayedBroadcastMode === 'pre-stream' ? 'Pre-Stream' : 'LIVE'}
                   </span>
                 </div>
               </div>
@@ -538,7 +701,7 @@ export const ModernLiveStudio: React.FC = () => {
                   </Button>
                 )}
 
-                {isLive && broadcastMode === 'pre-stream' && (
+                {isLive && displayedBroadcastMode === 'pre-stream' && (
                   <Button
                     onClick={handleGoLiveFromPreStream}
                     className="bg-primary hover:bg-primary/90 text-white font-black uppercase italic tracking-[0.1em] px-8 py-8 h-auto rounded-2xl animate-pulse"
@@ -547,28 +710,6 @@ export const ModernLiveStudio: React.FC = () => {
                     Go Live with Camera
                   </Button>
                 )}
-
-                {isLive && broadcastMode === 'live' && (
-                  <div className="flex items-center gap-2">
-                    <Button
-                      onClick={handleShowMediaToViewers}
-                      disabled={!preStreamRef.current}
-                      className="bg-amber-600 hover:bg-amber-700 text-white font-black uppercase italic tracking-[0.1em] px-6 py-8 h-auto rounded-2xl transition-all hover:-translate-y-1"
-                      title="Switch viewers to pre-stream media"
-                    >
-                      <Film className="w-5 h-5 mr-2" />
-                      Show Media
-                    </Button>
-                    <Button
-                      onClick={handleShowCameraToViewers}
-                      className="bg-blue-600 hover:bg-blue-700 text-white font-black uppercase italic tracking-[0.1em] px-6 py-8 h-auto rounded-2xl transition-all hover:-translate-y-1"
-                      title="Switch viewers back to camera"
-                    >
-                      <Camera className="w-5 h-5 mr-2" />
-                      Show Camera
-                    </Button>
-                  </div>
-                )}
               </div>
 
               <div className="flex items-center gap-3">
@@ -576,13 +717,72 @@ export const ModernLiveStudio: React.FC = () => {
                   <Share2 className="w-4 h-4" />
                   Share Stream
                 </Button>
-                <Button variant="outline" className="bg-slate-800 border-slate-700 text-white h-12 w-12 p-0 rounded-xl">
+                <Button variant="outline" onClick={() => document.getElementById('broadcast-settings')?.scrollIntoView({ behavior: 'smooth' })} className="bg-slate-800 border-slate-700 text-white h-12 w-12 p-0 rounded-xl" aria-label="Jump to broadcast settings">
                   <Settings className="w-5 h-5" />
                 </Button>
               </div>
             </div>
           </Card>
 
+          {liveKitEnabled && isLive && (
+            <Card className="bg-slate-900 border-slate-800 rounded-xl sm:rounded-3xl p-4 sm:p-6 space-y-5">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <Camera className="w-5 h-5 text-primary" />
+                    <h3 className="font-black uppercase tracking-tight text-white">Mobile camera desk</h3>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-1">Approved phones appear here. Select one to put its camera on the public program feed.</p>
+                </div>
+                <Button onClick={handleCreateCameraInvite} className="gap-2 bg-primary hover:bg-primary/90 text-white">
+                  <Plus className="w-4 h-4" /> Invite camera
+                </Button>
+              </div>
+              {lastCameraInvite && (
+                <div className="rounded-2xl border border-primary/30 bg-primary/10 p-3 space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs font-bold text-primary">{lastCameraInvite.label} invite ready</span>
+                    <Button variant="ghost" size="sm" className="text-primary" onClick={() => navigator.clipboard.writeText(lastCameraInvite.url).then(() => toast.success('Invite link copied')).catch(() => toast.info(lastCameraInvite.url))}>Copy link</Button>
+                  </div>
+                  <p className="text-[11px] text-slate-300 break-all">{lastCameraInvite.url}</p>
+                  <p className="text-[10px] text-slate-500">Expires {lastCameraInvite.expiresAt.toLocaleString()}</p>
+                </div>
+              )}
+              {contributorFeeds.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-slate-700 p-6 text-center text-sm text-slate-500">
+                  No mobile cameras are connected yet. Create an invite and open it on a phone.
+                </div>
+              ) : (
+                <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-3">
+                  {contributorFeeds.map(feed => (
+                    <div key={feed.identity} className={`rounded-2xl overflow-hidden border ${selectedFeedIdentity === feed.identity ? 'border-primary ring-2 ring-primary/30' : 'border-slate-700'} bg-slate-950`}>
+                      <ContributorPreview feed={feed} />
+                      <div className="p-3 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-bold text-white truncate">{feed.name}</span>
+                          {selectedFeedIdentity === feed.identity && <span className="text-[9px] font-black uppercase tracking-widest text-primary">On air</span>}
+                        </div>
+                        <Button size="sm" className="w-full gap-2" variant={selectedFeedIdentity === feed.identity ? 'secondary' : 'default'} onClick={() => handleSelectContributor(feed.identity)}>
+                          <Radio className="w-3.5 h-3.5" /> {selectedFeedIdentity === feed.identity ? 'On public feed' : 'Set as program'}
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {Array.isArray(cameraInvitesQuery.data) && cameraInvitesQuery.data.length > 0 && (
+                <div className="border-t border-slate-800 pt-4 space-y-2">
+                  <div className="flex items-center justify-between"><p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Issued invites</p><span className="text-[10px] text-slate-500">{cameraInvitesQuery.data.length}</span></div>
+                  {cameraInvitesQuery.data.map(invite => (
+                    <div key={String(invite._id)} className="flex items-center justify-between gap-3 rounded-xl bg-slate-950/70 px-3 py-2">
+                      <div className="min-w-0"><p className="text-xs font-semibold text-slate-200 truncate">{invite.label}</p><p className="text-[10px] text-slate-500">{invite.status}{invite.acceptedAt ? ' • connected' : ''}</p></div>
+                      {invite.status === 'pending' && <Button variant="ghost" size="sm" className="text-red-400 hover:text-red-300" onClick={() => handleRevokeCameraInvite(String(invite._id))}>Revoke</Button>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+          )}
           {/* Bottom Grid: Pre-Stream & Audio */}
           <div className="grid sm:grid-cols-2 gap-3 sm:gap-6">
              <div className="h-auto sm:h-[500px]">
@@ -590,7 +790,10 @@ export const ModernLiveStudio: React.FC = () => {
                  ref={preStreamRef}
                  isLive={isLive}
                  onMediaActivate={handlePreStreamMediaActivate}
-                 onAudioCapture={setPreStreamAudioStream}
+                 onAudioCapture={(audioStream) => {
+                   setPreStreamAudioStream(audioStream);
+                   mixerRef.current?.registerSource?.('preStream', audioStream);
+                 }}
                />
              </div>
              <div className="h-auto sm:h-[500px]">
@@ -632,20 +835,20 @@ export const ModernLiveStudio: React.FC = () => {
             </div>
 
             <div className="flex-1 overflow-y-auto p-6 space-y-6 scrollbar-thin scrollbar-thumb-slate-800">
-              {liveChatMessages.length === 0 ? (
+              {displayedChatMessages.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center text-center opacity-20">
                   <MessageSquare className="w-12 h-12 mb-4" />
                   <p className="text-xs font-bold uppercase tracking-widest">No messages yet</p>
                 </div>
               ) : (
-                liveChatMessages.map((msg, idx) => (
+                displayedChatMessages.map((msg, idx) => (
                   <div key={idx} className="group space-y-2">
                     <div className="flex items-center justify-between">
                       <span className={`text-[10px] font-black uppercase tracking-widest italic ${msg.role === 'admin' ? 'text-primary' : 'text-slate-400'}`}>
                         {msg.user}
                       </span>
                       <button
-                        onClick={() => deleteChatMessage(msg.id)}
+                        onClick={() => deleteStudioChat(msg.id)}
                         className="opacity-0 group-hover:opacity-100 text-red-500 hover:text-red-400 transition-all"
                       >
                         <Trash2 className="w-3 h-3" />
@@ -681,8 +884,38 @@ export const ModernLiveStudio: React.FC = () => {
             </div>
           </Card>
 
-          {/* Stream Settings Card */}
+          {/* Connected Platforms Card */}
           <Card className="bg-slate-900 border-slate-800 p-3 sm:p-6 rounded-xl sm:rounded-[2.5rem]">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="font-black text-white italic uppercase tracking-tight">Connected Platforms</h3>
+                <p className="text-[10px] text-slate-500 mt-1">Destinations used when you go live</p>
+              </div>
+              <div className="flex gap-2">
+                <Button variant="ghost" size="icon" onClick={() => refetchPlatforms()} className="text-slate-400"><RefreshCw className="w-4 h-4" /></Button>
+                <Button variant="outline" onClick={handleAddPlatform} disabled={addPlatformPending} className="bg-slate-800 border-slate-700 text-white">{addPlatformPending ? 'Connecting…' : 'Add platform'}</Button>
+              </div>
+            </div>
+            {platformsLoading ? (
+              <p className="text-sm text-slate-500 py-4">Loading connected platforms…</p>
+            ) : platformsError ? (
+              <p className="text-sm text-red-400 py-4">Unable to load platforms. Check administrator access and try again.</p>
+            ) : !connectedPlatforms?.length ? (
+              <p className="text-sm text-slate-500 py-4">No platforms connected. Add YouTube or Instagram before starting an external broadcast.</p>
+            ) : (
+              <div className="space-y-2">
+                {connectedPlatforms.map((platform: any) => (
+                  <div key={platform._id} className="flex items-center justify-between rounded-xl bg-slate-950 border border-slate-800 px-4 py-3">
+                    <div><p className="text-sm font-bold text-white capitalize">{platform.platform}</p><p className="text-xs text-slate-500">{platform.accountName}</p></div>
+                    <Button variant="ghost" size="sm" onClick={() => handleRemovePlatform(platform._id)} className="text-red-400 hover:text-red-300">Disconnect</Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+
+          {/* Stream Settings Card */}
+          <Card id="broadcast-settings" className="bg-slate-900 border-slate-800 p-3 sm:p-6 rounded-xl sm:rounded-[2.5rem]">
             <div className="flex items-center gap-3 mb-6">
               <Settings className="w-5 h-5 text-slate-400" />
               <h3 className="font-black text-white italic uppercase tracking-tight">Broadcast Info</h3>

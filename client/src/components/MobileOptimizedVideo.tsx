@@ -2,29 +2,15 @@
  * MobileOptimizedVideo.tsx
  *
  * ============================================================
- * VIEWER-SIDE AUDIO BOOST PIPELINE
+ * VIEWER-SIDE MEDIA PLAYBACK
  * ============================================================
  *
- * PROBLEM: WebRTC audio arrived at raw browser gain level.
- * VIEWERS experienced very low volume even at device max.
- *
- * FIX: Route incoming audio track through Web Audio API:
- *
- *   WebRTC Audio Track → MediaStreamSource → GainNode(2.0x) → ctx.destination
- *
- *   - Video element stays muted=true (required for autoplay on mobile)
- *   - Audio is played through Web Audio API at boosted gain
- *   - Viewers get a volume slider (0% – 400%) to control their own level
- *   - Smooth gain transitions via setTargetAtTime (no clicks/pops)
- *   - Gain defaults to 200% (2.0x) to fix the low-volume issue
- *
- * HOW IT WORKS:
- *   1. When a WebRTC stream arrives, extract the audio track
- *   2. Create a MediaStreamSource from the track
- *   3. Connect through a GainNode set to 2.0 (200%) by default
- *   4. Output to AudioContext.destination (browser speakers)
- *   5. The video element remains muted so autoplay works
- *   6. Unmute = toggle the Web Audio API gain, NOT the video element
+ * The native video element is the authoritative audio and video path. This
+ * keeps remote microphone and pre-stream audio together and avoids a second
+ * suspended AudioContext silently swallowing sound. The volume control is
+ * capped at the browser media-element range. When LiveKit reports that the
+ * browser needs a user gesture, Watch Live supplies an explicit audio-unlock
+ * action through Room.startAudio().
  */
 
 import { useRef, useState, useEffect, useCallback } from 'react';
@@ -38,6 +24,8 @@ interface MobileOptimizedVideoProps {
   connectionState: string;
   networkQuality: string;
   onReconnect?: () => void;
+  onStartAudio?: () => Promise<void>;
+  audioPlaybackBlocked?: boolean;
 }
 
 export default function MobileOptimizedVideo({
@@ -47,10 +35,12 @@ export default function MobileOptimizedVideo({
   connectionState,
   networkQuality,
   onReconnect,
+  onStartAudio,
+  audioPlaybackBlocked = false,
 }: MobileOptimizedVideoProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const [muted, setMuted] = useState(true);
+  const [muted, setMuted] = useState(false);
   const [showControls, setShowControls] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [needsTapToPlay, setNeedsTapToPlay] = useState(false);
@@ -60,7 +50,7 @@ export default function MobileOptimizedVideo({
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const gainNodeRef = useRef<GainNode | null>(null);
-  const [volumeLevel, setVolumeLevel] = useState(200); // Default 200% (2.0x)
+  const [volumeLevel, setVolumeLevel] = useState(100);
   const isAudioGraphConnectedRef = useRef(false);
 
   /**
@@ -81,7 +71,6 @@ export default function MobileOptimizedVideo({
 
     if (!gainNodeRef.current) {
       gainNodeRef.current = ctx.createGain();
-      // Default gain of 2.0 = 200% volume boost
       gainNodeRef.current.gain.value = volumeLevel / 100;
     }
 
@@ -131,18 +120,19 @@ export default function MobileOptimizedVideo({
     isAudioGraphConnectedRef.current = false;
   }, []);
 
-  // Connect audio boost when stream arrives
+  // Use the media element as the authoritative playback path. This avoids
+  // silent sessions when a browser suspends a secondary AudioContext graph.
   useEffect(() => {
-    if (stream) {
-      // Small delay to ensure the stream is fully initialized
-      const timer = setTimeout(() => {
-        connectAudioBoost();
-      }, 300);
-      return () => clearTimeout(timer);
-    } else {
+    if (!videoRef.current || !stream) {
       disconnectAudioBoost();
+      return;
     }
-  }, [stream, connectAudioBoost, disconnectAudioBoost]);
+    const video = videoRef.current;
+    video.srcObject = stream;
+    video.muted = muted;
+    video.volume = Math.min(1, volumeLevel / 100);
+    video.play().then(() => setNeedsTapToPlay(false)).catch(() => setNeedsTapToPlay(true));
+  }, [stream, muted, volumeLevel, disconnectAudioBoost]);
 
   // Update gain when volume level changes
   useEffect(() => {
@@ -197,9 +187,10 @@ export default function MobileOptimizedVideo({
       const video = videoRef.current;
       video.srcObject = stream;
 
-      // Video MUST stay muted for browser autoplay policy
-      // Audio is handled separately through Web Audio API gain pipeline
-      video.muted = true;
+      // Prefer audible native playback. If the browser blocks it, the overlay
+      // asks the viewer for one explicit gesture and then retries.
+      video.muted = muted;
+      video.volume = Math.min(1, volumeLevel / 100);
       video.autoplay = true;
       video.setAttribute('playsinline', 'true');
       video.setAttribute('webkit-playsinline', 'true');
@@ -228,11 +219,10 @@ export default function MobileOptimizedVideo({
   const handleTap = () => {
     resetHideTimer();
     if (videoRef.current && stream) {
-      if (videoRef.current.paused) {
-        videoRef.current.play().then(() => {
-          setNeedsTapToPlay(false);
-        }).catch(() => {});
-      }
+      setMuted(false);
+      videoRef.current.muted = false;
+      videoRef.current.volume = Math.min(1, volumeLevel / 100);
+      videoRef.current.play().then(() => setNeedsTapToPlay(false)).catch(() => {});
     }
   };
 
@@ -241,27 +231,23 @@ export default function MobileOptimizedVideo({
   }, []);
 
   /**
-   * Toggle mute/unmute.
-   * This controls the Web Audio API GainNode, NOT the video element.
-   * The video stays muted (autoplay policy) but audio flows through the gain node.
+   * Toggle native media-element mute/unmute. Browsers may require one
+   * explicit gesture before audible autoplay is allowed.
    */
   const toggleMute = () => {
-    setMuted(prev => {
-      const newMuted = !prev;
-      // Resume AudioContext if needed (browser requires user gesture)
-      if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
-        audioContextRef.current.resume();
-      }
-      return newMuted;
-    });
+      setMuted(prev => {
+        const newMuted = !prev;
+        if (videoRef.current) videoRef.current.muted = newMuted;
+        return newMuted;
+      });
   };
 
   /**
-   * Handle volume slider change (0% – 400%).
-   * Updates the Web Audio API GainNode gain value.
+   * Handle the native media-element volume slider (0%–100%).
    */
   const handleVolumeChange = useCallback((value: number) => {
     setVolumeLevel(value);
+    if (videoRef.current) videoRef.current.volume = Math.min(1, value / 100);
   }, []);
 
   const toggleFullscreen = async () => {
@@ -331,16 +317,15 @@ export default function MobileOptimizedVideo({
       className="relative w-full aspect-video bg-black rounded-2xl sm:rounded-3xl overflow-hidden touch-manipulation select-none"
       onClick={handleTap}
       onDoubleClick={handleDoubleTap}
-      role="application"
+      role="region"
       aria-label="Live Stream Video"
     >
-      {/* Video Element — stays muted for autoplay, audio via Web Audio API */}
+      {/* Video element carries both the remote video and audio tracks. */}
       {stream ? (
         <video
           ref={videoRef}
           autoPlay
           playsInline
-          muted
           className="absolute inset-0 w-full h-full object-contain"
           webkit-playsinline=""
           x5-playsinline=""
@@ -381,11 +366,28 @@ export default function MobileOptimizedVideo({
         </div>
       )}
 
-      {/* Tap to Play Overlay — for iOS Safari autoplay restriction */}
-      {needsTapToPlay && stream && (
-        <div 
+      {/* Explicit audio unlock for LiveKit/browser autoplay policy. */}
+      {audioPlaybackBlocked && stream && (
+        <div
           className="absolute inset-0 bg-black/60 backdrop-blur-sm flex flex-col items-center justify-center gap-4 z-40 cursor-pointer"
-          onClick={(e) => { e.stopPropagation(); handleTap(); }}
+          onClick={(event) => {
+            event.stopPropagation();
+            void onStartAudio?.().then(() => handleTap());
+          }}
+        >
+          <div className="w-20 h-20 rounded-full bg-primary/80 flex items-center justify-center border-2 border-primary/30 shadow-lg">
+            <Volume2 className="w-10 h-10 text-white" />
+          </div>
+          <p className="text-white text-base font-bold">Tap to enable live audio</p>
+          <p className="text-slate-400 text-xs">Your browser requires one tap before playing sound</p>
+        </div>
+      )}
+
+      {/* Tap to Play Overlay — for browsers that block native media playback */}
+      {needsTapToPlay && !audioPlaybackBlocked && stream && (
+        <div
+          className="absolute inset-0 bg-black/60 backdrop-blur-sm flex flex-col items-center justify-center gap-4 z-40 cursor-pointer"
+          onClick={(event) => { event.stopPropagation(); handleTap(); }}
         >
           <div className="w-20 h-20 rounded-full bg-primary/80 flex items-center justify-center border-2 border-primary/30 shadow-lg">
             <Play className="w-10 h-10 text-white ml-1" />
@@ -477,7 +479,7 @@ export default function MobileOptimizedVideo({
                       <input
                         type="range"
                         min={0}
-                        max={400}
+                        max={100}
                         step={5}
                         value={volumeLevel}
                         onChange={(e) => handleVolumeChange(Number(e.target.value))}

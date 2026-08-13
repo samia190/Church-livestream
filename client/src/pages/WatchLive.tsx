@@ -6,12 +6,50 @@ import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import Navigation from '@/components/Navigation';
 import { useViewer } from '@/hooks/useViewer';
+import { useLiveKitViewer } from '@/hooks/useLiveKit';
+import { trpc } from '@/lib/trpc';
 import { toast } from 'sonner';
 import MobileOptimizedVideo from '@/components/MobileOptimizedVideo';
 
 export default function WatchLive() {
-  const { remoteStream, meta, chatMessages, sendChatMessage, connectionState, networkInfo, reconnect } = useViewer();
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const liveKitUrlConfigured = Boolean(import.meta.env.VITE_LIVEKIT_URL);
+  const viewerIdentityRef = useRef(crypto.randomUUID());
+  const liveKitViewer = useLiveKitViewer();
+  const liveKitStatus = trpc.streaming.liveKitStatus.useQuery(undefined, { enabled: liveKitUrlConfigured, retry: false });
+  const liveKitConfigured = liveKitUrlConfigured && liveKitStatus.data?.enabled === true;
+  const liveKitPending = liveKitUrlConfigured && liveKitStatus.isLoading;
+  const legacyViewer = useViewer({ enabled: !liveKitUrlConfigured || (!liveKitPending && !liveKitConfigured) });
+  const liveKitToken = trpc.streaming.liveKitViewerToken.useQuery({ identity: viewerIdentityRef.current }, { enabled: liveKitConfigured, retry: false, refetchInterval: 120_000 });
+  const liveKitData = liveKitToken.data;
+  const liveKitAccess = liveKitData?.enabled === true && liveKitData.isLive === true ? liveKitData : null;
+  const liveKitActive = liveKitConfigured && Boolean(liveKitAccess);
+
+  useEffect(() => {
+    if (!liveKitConfigured) return;
+    if (!liveKitActive || !liveKitAccess?.serverUrl || !liveKitAccess.token) {
+      liveKitViewer.disconnect();
+      return;
+    }
+    void liveKitViewer.connect(liveKitAccess.serverUrl, liveKitAccess.token).catch(() => undefined);
+    return () => liveKitViewer.disconnect();
+  }, [liveKitConfigured, liveKitActive, liveKitAccess?.serverUrl, liveKitAccess?.token, liveKitViewer.connect, liveKitViewer.disconnect]);
+
+  const remoteStream = liveKitActive ? liveKitViewer.remoteStream : legacyViewer.remoteStream;
+  const meta = liveKitActive ? {
+    ...legacyViewer.meta,
+    sessionId: liveKitAccess?.roomName ?? null,
+    isLive: liveKitViewer.isLive,
+    title: liveKitAccess?.title ?? legacyViewer.meta.title,
+    description: liveKitAccess?.description ?? legacyViewer.meta.description,
+    viewers: liveKitViewer.viewerCount,
+    broadcastMode: "live" as const,
+    startTime: legacyViewer.meta.startTime || Date.now(),
+  } : legacyViewer.meta;
+  const chatMessages = liveKitActive ? liveKitViewer.chatMessages : legacyViewer.chatMessages;
+  const sendChatMessage = liveKitActive ? liveKitViewer.sendChatMessage : legacyViewer.sendChatMessage;
+  const connectionState = liveKitUrlConfigured ? (liveKitPending || liveKitToken.isLoading ? "connecting" : liveKitViewer.connected ? "connected" : "disconnected") : legacyViewer.connectionState;
+  const reconnect = liveKitAccess?.serverUrl && liveKitAccess.token ? () => { void liveKitViewer.connect(liveKitAccess.serverUrl, liveKitAccess.token); } : legacyViewer.reconnect;
+  const networkInfo = legacyViewer.networkInfo;
   const [muted, setMuted] = useState(true);
   const [chatInput, setChatInput] = useState("");
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -27,12 +65,6 @@ export default function WatchLive() {
     sendChatMessage(chatInput, "Viewer");
     setChatInput("");
   };
-
-  useEffect(() => {
-    if (videoRef.current) {
-      videoRef.current.srcObject = remoteStream;
-    }
-  }, [remoteStream]);
 
   const isLive = meta.isLive;
   const broadcastMode = meta.broadcastMode;
@@ -145,6 +177,8 @@ export default function WatchLive() {
             connectionState={connectionState}
             networkQuality={networkInfo.quality}
             onReconnect={reconnect}
+            onStartAudio={liveKitActive ? liveKitViewer.startAudio : undefined}
+            audioPlaybackBlocked={liveKitActive ? liveKitViewer.needsAudioStart : false}
           />
         </motion.div>
 
