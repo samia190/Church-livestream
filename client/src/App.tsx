@@ -8,6 +8,7 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 import AmbientField from "./components/three/AmbientField";
 import NotificationManager from "./components/NotificationManager";
 const Home = lazy(() => import("./pages/Home"));
+const Auth = lazy(() => import("./pages/Auth"));
 const History = lazy(() => import("./pages/History"));
 const Leadership = lazy(() => import("./pages/Leadership"));
 const Events = lazy(() => import("./pages/Events"));
@@ -42,33 +43,43 @@ function ScrollToTop() {
 
 function Router() {
   return (
-    <Suspense fallback={<div className="min-h-screen grid place-items-center text-muted-foreground">Loading…</div>}>
+    <Suspense
+      fallback={
+        <div className="min-h-screen grid place-items-center text-muted-foreground">
+          Loading…
+        </div>
+      }
+    >
       <Switch>
-      <Route path="/" component={Home} />
-      <Route path="/history" component={History} />
-      <Route path="/leadership" component={Leadership} />
-      <Route path="/events" component={Events} />
-      <Route path="/sermons" component={Sermons} />
-      <Route path="/community" component={Community} />
-      <Route path="/contact" component={Contact} />
-      <Route path="/prayer" component={Prayer} />
-      <Route path="/give" component={Give} />
-      <Route path="/admin" component={AdminDashboard} />
-      <Route path="/livestream" component={LiveStream} />
-      <Route path="/watch-live" component={WatchLive} />
-      <Route path="/real-live" component={RealLiveStream} />
-      <Route path="/journey" component={WelcomeJourney} />
-      <Route path="/journal" component={FaithJournal} />
-      <Route path="/prayer-room" component={PrayerRoom} />
-      <Route path="/community-hub" component={CommunityHub} />
-      <Route path="/care" component={Care} />
-      <Route path="/faith-in-action" component={FaithInAction} />
-      <Route path="/scripture-companion" component={ScriptureCompanion} />
-      <Route path="/prayer-gatherings" component={PrayerRoomGatherings} />
-      <Route path="/prayer-gatherings/:sessionId/live" component={PrayerRoomLive} />
-      <Route path="/contribute/:code" component={ContributorCamera} />
-      <Route path="/404" component={NotFound} />
-      <Route component={NotFound} />
+        <Route path="/auth" component={Auth} />
+        <Route path="/" component={Home} />
+        <Route path="/history" component={History} />
+        <Route path="/leadership" component={Leadership} />
+        <Route path="/events" component={Events} />
+        <Route path="/sermons" component={Sermons} />
+        <Route path="/community" component={Community} />
+        <Route path="/contact" component={Contact} />
+        <Route path="/prayer" component={Prayer} />
+        <Route path="/give" component={Give} />
+        <Route path="/admin" component={AdminDashboard} />
+        <Route path="/livestream" component={LiveStream} />
+        <Route path="/watch-live" component={WatchLive} />
+        <Route path="/real-live" component={RealLiveStream} />
+        <Route path="/journey" component={WelcomeJourney} />
+        <Route path="/journal" component={FaithJournal} />
+        <Route path="/prayer-room" component={PrayerRoom} />
+        <Route path="/community-hub" component={CommunityHub} />
+        <Route path="/care" component={Care} />
+        <Route path="/faith-in-action" component={FaithInAction} />
+        <Route path="/scripture-companion" component={ScriptureCompanion} />
+        <Route path="/prayer-gatherings" component={PrayerRoomGatherings} />
+        <Route
+          path="/prayer-gatherings/:sessionId/live"
+          component={PrayerRoomLive}
+        />
+        <Route path="/contribute/:code" component={ContributorCamera} />
+        <Route path="/404" component={NotFound} />
+        <Route component={NotFound} />
       </Switch>
     </Suspense>
   );
@@ -82,15 +93,18 @@ function Router() {
 function App() {
   return (
     <ErrorBoundary>
-      <ThemeProvider
-        defaultTheme="dark"
-      >
+      <ThemeProvider defaultTheme="dark">
         <TooltipProvider>
           <ScrollToTop />
           <Toaster />
           <AmbientField />
           <NotificationManager />
-          <a href="#main-content" className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-md focus:bg-background focus:px-4 focus:py-2 focus:text-foreground focus:shadow-lg">Skip to main content</a>
+          <a
+            href="#main-content"
+            className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-md focus:bg-background focus:px-4 focus:py-2 focus:text-foreground focus:shadow-lg"
+          >
+            Skip to main content
+          </a>
           <div id="main-content" className="relative z-10" tabIndex={-1}>
             <Router />
           </div>

@@ -19,12 +19,11 @@ import {
   SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { getLoginUrl } from "@/const";
 import { useIsMobile } from "@/hooks/useMobile";
 import { LayoutDashboard, LogOut, PanelLeft, Users } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
-import { DashboardLayoutSkeleton } from './DashboardLayoutSkeleton';
+import { DashboardLayoutSkeleton } from "./DashboardLayoutSkeleton";
 import { Button } from "./ui/button";
 
 const menuItems = [
@@ -61,8 +60,16 @@ export default function DashboardLayout({
       <div className="min-h-screen flex items-center justify-center p-6">
         <div className="max-w-md text-center space-y-4">
           <h1 className="text-2xl font-bold">Administrator sign-in required</h1>
-          <p className="text-muted-foreground">Please sign in with an authorized administrator account to continue.</p>
-          <Button onClick={() => { window.location.href = getLoginUrl(); }}>Sign in</Button>
+          <p className="text-muted-foreground">
+            Please sign in with an authorized administrator account to continue.
+          </p>
+          <Button
+            onClick={() => {
+              window.location.href = "/auth?next=%2Fadmin";
+            }}
+          >
+            Sign in
+          </Button>
         </div>
       </div>
     );

@@ -6,8 +6,6 @@ export interface IUser extends Document {
   name?: string | null;
   email?: string | null;
   loginMethod?: string | null;
-  passwordHash?: string | null;
-  passwordSalt?: string | null;
   role: "user" | "admin";
   createdAt: Date;
   updatedAt: Date;
@@ -20,8 +18,6 @@ const UserSchema = new Schema<IUser>(
     name: { type: String, default: null },
     email: { type: String, default: null },
     loginMethod: { type: String, default: null },
-    passwordHash: { type: String, default: null, select: false },
-    passwordSalt: { type: String, default: null, select: false },
     role: { type: String, enum: ["user", "admin"], default: "user" },
     lastSignedIn: { type: Date, default: Date.now },
   },
@@ -71,12 +67,12 @@ export const PrayerRequest =
 // ---- Donation ----
 export interface IDonation extends Document {
   donorName: string;
-  email?: string | null;
+  email: string;
   phone?: string | null;
   amount: number;
   currency: string;
   method: "online" | "bank" | "mobile" | "inperson";
-  provider?: "mpesa" | "paypal" | "stripe" | null;
+  provider?: "mpesa" | "paypal" | null;
   purpose?: string | null;
   status: "pending" | "completed" | "failed";
   transactionId?: string | null;
@@ -89,7 +85,7 @@ export interface IDonation extends Document {
 const DonationSchema = new Schema<IDonation>(
   {
     donorName: { type: String, required: true },
-    email: { type: String, default: null },
+    email: { type: String, required: true },
     phone: { type: String, default: null },
     amount: { type: Number, required: true },
     currency: { type: String, default: "KES" },
@@ -98,11 +94,7 @@ const DonationSchema = new Schema<IDonation>(
       enum: ["online", "bank", "mobile", "inperson"],
       required: true,
     },
-    provider: {
-      type: String,
-      enum: ["mpesa", "paypal", "stripe"],
-      default: null,
-    },
+    provider: { type: String, enum: ["mpesa", "paypal"], default: null },
     purpose: { type: String, default: null },
     status: {
       type: String,
@@ -313,39 +305,35 @@ export interface IProductionCameraInvitation extends Document {
   updatedAt: Date;
 }
 
-const ProductionCameraInvitationSchema =
-  new Schema<IProductionCameraInvitation>(
-    {
-      sessionId: { type: String, required: true, index: true },
-      label: { type: String, required: true, trim: true, maxlength: 80 },
-      codeHash: { type: String, required: true, unique: true, index: true },
-      status: {
-        type: String,
-        enum: ["pending", "accepted", "revoked", "expired"],
-        default: "pending",
-        index: true,
-      },
-      expiresAt: { type: Date, required: true, index: true },
-      createdByOpenId: { type: String, required: true, index: true },
-      acceptedAt: { type: Date, default: null },
-      acceptedDeviceName: { type: String, default: null },
-      lastSeenAt: { type: Date, default: null },
-    },
-    { timestamps: true, collection: "productionCameraInvitations" }
-  );
+const ProductionCameraInvitationSchema = new Schema<IProductionCameraInvitation>(
+  {
+    sessionId: { type: String, required: true, index: true },
+    label: { type: String, required: true, trim: true, maxlength: 80 },
+    codeHash: { type: String, required: true, unique: true, index: true },
+    status: { type: String, enum: ["pending", "accepted", "revoked", "expired"], default: "pending", index: true },
+    expiresAt: { type: Date, required: true, index: true },
+    createdByOpenId: { type: String, required: true, index: true },
+    acceptedAt: { type: Date, default: null },
+    acceptedDeviceName: { type: String, default: null },
+    lastSeenAt: { type: Date, default: null },
+  },
+  { timestamps: true, collection: "productionCameraInvitations" }
+);
 
 ProductionCameraInvitationSchema.index({ sessionId: 1, status: 1 });
 export const ProductionCameraInvitation =
   mongoose.models.ProductionCameraInvitation ||
-  model<IProductionCameraInvitation>(
-    "ProductionCameraInvitation",
-    ProductionCameraInvitationSchema
-  );
+  model<IProductionCameraInvitation>("ProductionCameraInvitation", ProductionCameraInvitationSchema);
 
 // ---- PlatformConnection ----
 export interface IPlatformConnection extends Document {
   platform:
-    "youtube" | "facebook" | "instagram" | "tiktok" | "twitter" | "twitch";
+    | "youtube"
+    | "facebook"
+    | "instagram"
+    | "tiktok"
+    | "twitter"
+    | "twitch";
   accountName: string;
   accessToken: string;
   refreshToken?: string | null;
@@ -421,7 +409,12 @@ export const CameraDevice =
 export interface IStreamBroadcast extends Document {
   sessionId: mongoose.Types.ObjectId; // ObjectId of StreamingSession
   platform:
-    "youtube" | "facebook" | "instagram" | "tiktok" | "twitter" | "twitch";
+    | "youtube"
+    | "facebook"
+    | "instagram"
+    | "tiktok"
+    | "twitter"
+    | "twitch";
   broadcastUrl?: string | null;
   status: "pending" | "live" | "ended";
   viewerCount: number;
@@ -527,7 +520,12 @@ export const PlatformCredential =
 export interface ISessionPlatformMap extends Document {
   sessionId: mongoose.Types.ObjectId; // ObjectId of StreamingSession
   platform:
-    "youtube" | "facebook" | "instagram" | "tiktok" | "twitter" | "twitch";
+    | "youtube"
+    | "facebook"
+    | "instagram"
+    | "tiktok"
+    | "twitter"
+    | "twitch";
   broadcastId?: string | null;
   broadcastUrl?: string | null;
   status: "pending" | "live" | "ended" | "failed";
@@ -571,6 +569,7 @@ export const SessionPlatformMap =
   mongoose.models.SessionPlatformMap ||
   model<ISessionPlatformMap>("SessionPlatformMap", SessionPlatformMapSchema);
 
+
 // ---- Spiritual Journey ----
 export interface ISpiritualJourney extends Document {
   userOpenId: string;
@@ -596,9 +595,7 @@ const SpiritualJourneySchema = new Schema<ISpiritualJourney>(
 );
 
 SpiritualJourneySchema.index({ userOpenId: 1, pathId: 1 }, { unique: true });
-export const SpiritualJourney =
-  mongoose.models.SpiritualJourney ||
-  model<ISpiritualJourney>("SpiritualJourney", SpiritualJourneySchema);
+export const SpiritualJourney = mongoose.models.SpiritualJourney || model<ISpiritualJourney>("SpiritualJourney", SpiritualJourneySchema);
 
 // ---- Faith Journal ----
 export interface IFaithJournalEntry extends Document {
@@ -617,11 +614,7 @@ const FaithJournalEntrySchema = new Schema<IFaithJournalEntry>(
     userOpenId: { type: String, required: true, index: true },
     title: { type: String, default: null },
     content: { type: String, required: true, maxlength: 12000 },
-    mood: {
-      type: String,
-      enum: ["grateful", "hopeful", "burdened", "peaceful", "seeking"],
-      default: null,
-    },
+    mood: { type: String, enum: ["grateful", "hopeful", "burdened", "peaceful", "seeking"], default: null },
     scriptureReference: { type: String, default: null },
     isPrivate: { type: Boolean, default: true },
   },
@@ -629,9 +622,8 @@ const FaithJournalEntrySchema = new Schema<IFaithJournalEntry>(
 );
 
 FaithJournalEntrySchema.index({ userOpenId: 1, createdAt: -1 });
-export const FaithJournalEntry =
-  mongoose.models.FaithJournalEntry ||
-  model<IFaithJournalEntry>("FaithJournalEntry", FaithJournalEntrySchema);
+export const FaithJournalEntry = mongoose.models.FaithJournalEntry || model<IFaithJournalEntry>("FaithJournalEntry", FaithJournalEntrySchema);
+
 
 // ---- Trusted Circles ----
 export interface ICircle extends Document {
@@ -649,11 +641,7 @@ const CircleSchema = new Schema<ICircle>(
   {
     name: { type: String, required: true },
     description: { type: String, required: true },
-    category: {
-      type: String,
-      enum: ["small-group", "prayer", "youth", "service", "family"],
-      required: true,
-    },
+    category: { type: String, enum: ["small-group", "prayer", "youth", "service", "family"], required: true },
     meetingDetails: { type: String, default: null },
     leaderOpenId: { type: String, default: null },
     isActive: { type: Boolean, default: true },
@@ -661,8 +649,7 @@ const CircleSchema = new Schema<ICircle>(
   { timestamps: true, collection: "circles" }
 );
 
-export const Circle =
-  mongoose.models.Circle || model<ICircle>("Circle", CircleSchema);
+export const Circle = mongoose.models.Circle || model<ICircle>("Circle", CircleSchema);
 
 export interface ICircleMembership extends Document {
   circleId: string;
@@ -676,31 +663,18 @@ const CircleMembershipSchema = new Schema<ICircleMembership>(
   {
     circleId: { type: String, required: true, index: true },
     userOpenId: { type: String, required: true, index: true },
-    status: {
-      type: String,
-      enum: ["requested", "active", "left"],
-      default: "requested",
-    },
+    status: { type: String, enum: ["requested", "active", "left"], default: "requested" },
   },
   { timestamps: true, collection: "circleMemberships" }
 );
 
 CircleMembershipSchema.index({ circleId: 1, userOpenId: 1 }, { unique: true });
-export const CircleMembership =
-  mongoose.models.CircleMembership ||
-  model<ICircleMembership>("CircleMembership", CircleMembershipSchema);
+export const CircleMembership = mongoose.models.CircleMembership || model<ICircleMembership>("CircleMembership", CircleMembershipSchema);
 
 // ---- Pastoral Care ----
 export interface ICareRequest extends Document {
   userOpenId: string;
-  category:
-    | "pastoral-conversation"
-    | "grief"
-    | "family"
-    | "youth"
-    | "addiction"
-    | "practical-help"
-    | "other";
+  category: "pastoral-conversation" | "grief" | "family" | "youth" | "addiction" | "practical-help" | "other";
   message: string;
   preferredContact?: "email" | "phone" | "in-person" | null;
   status: "new" | "assigned" | "in-progress" | "closed" | "escalated";
@@ -716,47 +690,20 @@ export interface ICareRequest extends Document {
 const CareRequestSchema = new Schema<ICareRequest>(
   {
     userOpenId: { type: String, required: true, index: true },
-    category: {
-      type: String,
-      enum: [
-        "pastoral-conversation",
-        "grief",
-        "family",
-        "youth",
-        "addiction",
-        "practical-help",
-        "other",
-      ],
-      required: true,
-    },
+    category: { type: String, enum: ["pastoral-conversation", "grief", "family", "youth", "addiction", "practical-help", "other"], required: true },
     message: { type: String, required: true, maxlength: 12000 },
-    preferredContact: {
-      type: String,
-      enum: ["email", "phone", "in-person"],
-      default: null,
-    },
-    status: {
-      type: String,
-      enum: ["new", "assigned", "in-progress", "closed", "escalated"],
-      default: "new",
-    },
+    preferredContact: { type: String, enum: ["email", "phone", "in-person"], default: null },
+    status: { type: String, enum: ["new", "assigned", "in-progress", "closed", "escalated"], default: "new" },
     safeguardingFlag: { type: Boolean, default: false },
     assignedToOpenId: { type: String, default: null, index: true },
-    priority: {
-      type: String,
-      enum: ["routine", "high", "urgent"],
-      default: "routine",
-      index: true,
-    },
+    priority: { type: String, enum: ["routine", "high", "urgent"], default: "routine", index: true },
     dueAt: { type: Date, default: null, index: true },
     lastRespondedAt: { type: Date, default: null },
   },
   { timestamps: true, collection: "careRequests" }
 );
 
-export const CareRequest =
-  mongoose.models.CareRequest ||
-  model<ICareRequest>("CareRequest", CareRequestSchema);
+export const CareRequest = mongoose.models.CareRequest || model<ICareRequest>("CareRequest", CareRequestSchema);
 
 export interface ICareCaseNote extends Document {
   careRequestId: string;
@@ -776,20 +723,12 @@ const CareCaseNoteSchema = new Schema<ICareCaseNote>(
 );
 
 CareCaseNoteSchema.index({ careRequestId: 1, createdAt: 1 });
-export const CareCaseNote =
-  mongoose.models.CareCaseNote ||
-  model<ICareCaseNote>("CareCaseNote", CareCaseNoteSchema);
+export const CareCaseNote = mongoose.models.CareCaseNote || model<ICareCaseNote>("CareCaseNote", CareCaseNoteSchema);
 
 export interface ICareCaseActivity extends Document {
   careRequestId: string;
   actorOpenId: string;
-  action:
-    | "created"
-    | "assigned"
-    | "priority_changed"
-    | "status_changed"
-    | "note_added"
-    | "deadline_changed";
+  action: "created" | "assigned" | "priority_changed" | "status_changed" | "note_added" | "deadline_changed";
   summary: string;
   createdAt: Date;
   updatedAt: Date;
@@ -799,40 +738,21 @@ const CareCaseActivitySchema = new Schema<ICareCaseActivity>(
   {
     careRequestId: { type: String, required: true, index: true },
     actorOpenId: { type: String, required: true, index: true },
-    action: {
-      type: String,
-      enum: [
-        "created",
-        "assigned",
-        "priority_changed",
-        "status_changed",
-        "note_added",
-        "deadline_changed",
-      ],
-      required: true,
-    },
+    action: { type: String, enum: ["created", "assigned", "priority_changed", "status_changed", "note_added", "deadline_changed"], required: true },
     summary: { type: String, required: true, maxlength: 1000 },
   },
   { timestamps: true, collection: "careCaseActivities" }
 );
 
 CareCaseActivitySchema.index({ careRequestId: 1, createdAt: 1 });
-export const CareCaseActivity =
-  mongoose.models.CareCaseActivity ||
-  model<ICareCaseActivity>("CareCaseActivity", CareCaseActivitySchema);
+export const CareCaseActivity = mongoose.models.CareCaseActivity || model<ICareCaseActivity>("CareCaseActivity", CareCaseActivitySchema);
+
 
 // ---- Faith in Action ----
 export interface IServiceOpportunity extends Document {
   title: string;
   description: string;
-  category:
-    | "visitation"
-    | "students"
-    | "food"
-    | "environment"
-    | "skills"
-    | "outreach"
-    | "other";
+  category: "visitation" | "students" | "food" | "environment" | "skills" | "outreach" | "other";
   location?: string | null;
   startsAt?: Date | null;
   spots: number;
@@ -845,19 +765,7 @@ const ServiceOpportunitySchema = new Schema<IServiceOpportunity>(
   {
     title: { type: String, required: true },
     description: { type: String, required: true },
-    category: {
-      type: String,
-      enum: [
-        "visitation",
-        "students",
-        "food",
-        "environment",
-        "skills",
-        "outreach",
-        "other",
-      ],
-      required: true,
-    },
+    category: { type: String, enum: ["visitation", "students", "food", "environment", "skills", "outreach", "other"], required: true },
     location: { type: String, default: null },
     startsAt: { type: Date, default: null },
     spots: { type: Number, default: 0 },
@@ -866,9 +774,7 @@ const ServiceOpportunitySchema = new Schema<IServiceOpportunity>(
   { timestamps: true, collection: "serviceOpportunities" }
 );
 
-export const ServiceOpportunity =
-  mongoose.models.ServiceOpportunity ||
-  model<IServiceOpportunity>("ServiceOpportunity", ServiceOpportunitySchema);
+export const ServiceOpportunity = mongoose.models.ServiceOpportunity || model<IServiceOpportunity>("ServiceOpportunity", ServiceOpportunitySchema);
 
 export interface IServiceSignup extends Document {
   opportunityId: string;
@@ -882,22 +788,14 @@ const ServiceSignupSchema = new Schema<IServiceSignup>(
   {
     opportunityId: { type: String, required: true, index: true },
     userOpenId: { type: String, required: true, index: true },
-    status: {
-      type: String,
-      enum: ["interested", "confirmed", "cancelled"],
-      default: "interested",
-    },
+    status: { type: String, enum: ["interested", "confirmed", "cancelled"], default: "interested" },
   },
   { timestamps: true, collection: "serviceSignups" }
 );
 
-ServiceSignupSchema.index(
-  { opportunityId: 1, userOpenId: 1 },
-  { unique: true }
-);
-export const ServiceSignup =
-  mongoose.models.ServiceSignup ||
-  model<IServiceSignup>("ServiceSignup", ServiceSignupSchema);
+ServiceSignupSchema.index({ opportunityId: 1, userOpenId: 1 }, { unique: true });
+export const ServiceSignup = mongoose.models.ServiceSignup || model<IServiceSignup>("ServiceSignup", ServiceSignupSchema);
+
 
 // ---- Prayer Room Sessions ----
 export interface IPrayerRoomSession extends Document {
@@ -920,26 +818,16 @@ const PrayerRoomSessionSchema = new Schema<IPrayerRoomSession>(
     description: { type: String, required: true },
     startsAt: { type: Date, required: true, index: true },
     durationMinutes: { type: Number, default: 60, min: 15, max: 240 },
-    mode: {
-      type: String,
-      enum: ["voice-video", "voice"],
-      default: "voice-video",
-    },
+    mode: { type: String, enum: ["voice-video", "voice"], default: "voice-video" },
     capacity: { type: Number, default: 30, min: 2, max: 500 },
     joinUrl: { type: String, default: null },
-    status: {
-      type: String,
-      enum: ["scheduled", "live", "ended", "cancelled"],
-      default: "scheduled",
-    },
+    status: { type: String, enum: ["scheduled", "live", "ended", "cancelled"], default: "scheduled" },
     isPublished: { type: Boolean, default: true },
   },
   { timestamps: true, collection: "prayerRoomSessions" }
 );
 
-export const PrayerRoomSession =
-  mongoose.models.PrayerRoomSession ||
-  model<IPrayerRoomSession>("PrayerRoomSession", PrayerRoomSessionSchema);
+export const PrayerRoomSession = mongoose.models.PrayerRoomSession || model<IPrayerRoomSession>("PrayerRoomSession", PrayerRoomSessionSchema);
 
 export interface IPrayerRoomRegistration extends Document {
   sessionId: string;
@@ -973,37 +861,20 @@ const NotificationPreferenceSchema = new Schema<INotificationPreference>(
   { timestamps: true, collection: "notificationPreferences" }
 );
 
-export const NotificationPreference =
-  mongoose.models.NotificationPreference ||
-  model<INotificationPreference>(
-    "NotificationPreference",
-    NotificationPreferenceSchema
-  );
+export const NotificationPreference = mongoose.models.NotificationPreference || model<INotificationPreference>("NotificationPreference", NotificationPreferenceSchema);
 
 const PrayerRoomRegistrationSchema = new Schema<IPrayerRoomRegistration>(
   {
     sessionId: { type: String, required: true, index: true },
     userOpenId: { type: String, required: true, index: true },
     notificationOptIn: { type: Boolean, default: true },
-    status: {
-      type: String,
-      enum: ["registered", "attended", "cancelled"],
-      default: "registered",
-    },
+    status: { type: String, enum: ["registered", "attended", "cancelled"], default: "registered" },
   },
   { timestamps: true, collection: "prayerRoomRegistrations" }
 );
 
-PrayerRoomRegistrationSchema.index(
-  { sessionId: 1, userOpenId: 1 },
-  { unique: true }
-);
-export const PrayerRoomRegistration =
-  mongoose.models.PrayerRoomRegistration ||
-  model<IPrayerRoomRegistration>(
-    "PrayerRoomRegistration",
-    PrayerRoomRegistrationSchema
-  );
+PrayerRoomRegistrationSchema.index({ sessionId: 1, userOpenId: 1 }, { unique: true });
+export const PrayerRoomRegistration = mongoose.models.PrayerRoomRegistration || model<IPrayerRoomRegistration>("PrayerRoomRegistration", PrayerRoomRegistrationSchema);
 
 export interface INotificationDelivery extends Document {
   dedupeKey: string;
@@ -1022,17 +893,9 @@ const NotificationDeliverySchema = new Schema<INotificationDelivery>(
   {
     dedupeKey: { type: String, required: true, unique: true, index: true },
     userOpenId: { type: String, required: true, index: true },
-    kind: {
-      type: String,
-      enum: ["prayer-room", "sermon", "event"],
-      required: true,
-    },
+    kind: { type: String, enum: ["prayer-room", "sermon", "event"], required: true },
     channel: { type: String, enum: ["email", "webhook"], required: true },
-    status: {
-      type: String,
-      enum: ["processing", "sent", "failed"],
-      default: "processing",
-    },
+    status: { type: String, enum: ["processing", "sent", "failed"], default: "processing" },
     attempts: { type: Number, default: 0 },
     sentAt: { type: Date, default: null },
     lastError: { type: String, default: null },
@@ -1040,9 +903,4 @@ const NotificationDeliverySchema = new Schema<INotificationDelivery>(
   { timestamps: true, collection: "notificationDeliveries" }
 );
 
-export const NotificationDelivery =
-  mongoose.models.NotificationDelivery ||
-  model<INotificationDelivery>(
-    "NotificationDelivery",
-    NotificationDeliverySchema
-  );
+export const NotificationDelivery = mongoose.models.NotificationDelivery || model<INotificationDelivery>("NotificationDelivery", NotificationDeliverySchema);

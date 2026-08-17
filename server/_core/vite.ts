@@ -9,7 +9,10 @@ import viteConfig from "../../vite.config";
 export async function setupVite(app: Express, server: Server) {
   const serverOptions = {
     middlewareMode: true,
-    hmr: { server },
+    // The app is served through Express middleware, so Vite’s standalone HMR
+    // client would otherwise target a second localhost port. Full reloads keep
+    // development deterministic and avoid a broken tokenized websocket.
+    hmr: false,
     allowedHosts: true as const,
   };
 

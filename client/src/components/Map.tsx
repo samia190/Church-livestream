@@ -76,7 +76,7 @@
 
 /// <reference types="@types/google.maps" />
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { usePersistFn } from "@/hooks/usePersistFn";
 import { cn } from "@/lib/utils";
 
@@ -87,29 +87,23 @@ declare global {
 }
 
 const API_KEY = import.meta.env.VITE_FRONTEND_FORGE_API_KEY;
-const MAP_ID = import.meta.env.VITE_GOOGLE_MAP_ID;
 const FORGE_BASE_URL =
   import.meta.env.VITE_FRONTEND_FORGE_API_URL ||
   "https://forge.butterfly-effect.dev";
 const MAPS_PROXY_URL = `${FORGE_BASE_URL}/v1/maps/proxy`;
 
-function loadMapScript(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (!API_KEY) {
-      reject(new Error("Google Maps credentials are not configured"));
-      return;
-    }
+function loadMapScript() {
+  return new Promise(resolve => {
     const script = document.createElement("script");
-    script.src = `${MAPS_PROXY_URL}/maps/api/js?key=${encodeURIComponent(API_KEY)}&v=weekly&libraries=marker,places,geocoding,geometry`;
+    script.src = `${MAPS_PROXY_URL}/maps/api/js?key=${API_KEY}&v=weekly&libraries=marker,places,geocoding,geometry`;
     script.async = true;
     script.crossOrigin = "anonymous";
     script.onload = () => {
-      resolve();
-      script.remove();
+      resolve(null);
+      script.remove(); // Clean up immediately
     };
     script.onerror = () => {
-      script.remove();
-      reject(new Error("Google Maps script failed to load"));
+      console.error("Failed to load Google Maps script");
     };
     document.head.appendChild(script);
   });
@@ -130,7 +124,6 @@ export function MapView({
 }: MapViewProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<google.maps.Map | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
   const init = usePersistFn(async () => {
     await loadMapScript();
@@ -138,30 +131,25 @@ export function MapView({
       console.error("Map container not found");
       return;
     }
-      map.current = new window.google.maps.Map(mapContainer.current, {
-        zoom: initialZoom,
-        center: initialCenter,
-        mapTypeControl: true,
-        fullscreenControl: true,
-        zoomControl: true,
-        streetViewControl: true,
-        ...(MAP_ID ? { mapId: MAP_ID } : {}),
-      });
+    map.current = new window.google.maps.Map(mapContainer.current, {
+      zoom: initialZoom,
+      center: initialCenter,
+      mapTypeControl: true,
+      fullscreenControl: true,
+      zoomControl: true,
+      streetViewControl: true,
+      mapId: "DEMO_MAP_ID",
+    });
     if (onMapReady) {
       onMapReady(map.current);
     }
   });
 
   useEffect(() => {
-    init().catch((cause) => {
-      console.error("[MapView] Failed to initialize map:", cause);
-      setError(cause instanceof Error ? cause.message : "Map unavailable");
-    });
+    init();
   }, [init]);
 
   return (
-    <div ref={mapContainer} className={cn("w-full h-[500px]", className)}>
-      {error && <div role="status" className="h-full grid place-items-center p-6 text-center text-sm text-muted-foreground">Map is currently unavailable. Please verify the map configuration.</div>}
-    </div>
+    <div ref={mapContainer} className={cn("w-full h-[500px]", className)} />
   );
 }

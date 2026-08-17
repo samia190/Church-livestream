@@ -174,7 +174,6 @@ interface AudioScene {
 interface AudioMixerRef {
   getProcessedStream: () => MediaStream | null;
   getAudioContext: () => AudioContext | null;
-  ensureAudioReady: () => Promise<MediaStream | null>;
   registerSource: (sourceId: string, stream: MediaStream | null) => void;
   switchMicrophone: (deviceId: string) => Promise<MediaStream | null>;
 }
@@ -669,15 +668,6 @@ const ProfessionalAudioMixer = forwardRef<AudioMixerRef, ProfessionalAudioMixerP
       setGraphInitialized(true);
       return ctx;
     }, []); // Intentionally empty — initialize once
-
-    // Initialize the graph as soon as a real source exists. Previously this only
-    // happened after music/system-audio actions, leaving normal camera/pre-stream
-    // broadcasts without a processed audio destination.
-    useEffect(() => {
-      if (!graphInitialized && (mediaStream || preStreamAudioStream)) {
-        initAudioContext();
-      }
-    }, [graphInitialized, mediaStream, preStreamAudioStream, initAudioContext]);
 
     /* ── Load Auto-Tune AudioWorklet Processor ─────────────────────────────── */
     const loadAutoTune = useCallback(async () => {
@@ -1518,49 +1508,15 @@ const ProfessionalAudioMixer = forwardRef<AudioMixerRef, ProfessionalAudioMixerP
       );
     }
 
-    const ensureAudioReady = useCallback(async () => {
-      const ctx = initAudioContext();
-      if (mediaStream && !micSourceRef.current && highPassRef.current) {
-        const source = ctx.createMediaStreamSource(mediaStream);
-        micSourceRef.current = source;
-        micGainRef.current ??= ctx.createGain();
-        micPanRef.current ??= ctx.createStereoPanner();
-        source.connect(micGainRef.current);
-        micGainRef.current.connect(micPanRef.current);
-        micPanRef.current.connect(highPassRef.current);
-      }
-      if (preStreamAudioStream && !preStreamSourceRef.current && highPassRef.current) {
-        const source = ctx.createMediaStreamSource(preStreamAudioStream);
-        preStreamSourceRef.current = source;
-        preStreamGainRef.current ??= ctx.createGain();
-        preStreamPanRef.current ??= ctx.createStereoPanner();
-        source.connect(preStreamGainRef.current);
-        preStreamGainRef.current.connect(preStreamPanRef.current);
-        preStreamPanRef.current.connect(highPassRef.current);
-      }
-      updateTrackGains();
-      if (ctx.state === "suspended") await ctx.resume();
-      return destinationRef.current?.stream || null;
-    }, [initAudioContext, mediaStream, preStreamAudioStream, updateTrackGains]);
-
     /* ── Expose ref methods ────────────────────────────────────────────────── */
     useImperativeHandle(ref, () => ({
       getProcessedStream: () => destinationRef.current?.stream || null,
       getAudioContext: () => audioContextRef.current,
-      ensureAudioReady,
       registerSource: (sourceId: string, stream: MediaStream | null) => {
-        if (sourceId !== "preStream") return;
-        const ctx = initAudioContext();
-        try { preStreamSourceRef.current?.disconnect(); } catch {}
-        preStreamSourceRef.current = null;
-        if (!stream || stream.getAudioTracks().length === 0 || !highPassRef.current) return;
-        const source = ctx.createMediaStreamSource(stream);
-        preStreamSourceRef.current = source;
-        preStreamGainRef.current ??= ctx.createGain();
-        preStreamPanRef.current ??= ctx.createStereoPanner();
-        source.connect(preStreamGainRef.current);
-        preStreamGainRef.current.connect(preStreamPanRef.current);
-        preStreamPanRef.current.connect(highPassRef.current);
+        // This allows external components to register/unregister audio sources
+        if (sourceId === "preStream" && stream) {
+          // Already handled by preStreamAudioStream prop
+        }
       },
       switchMicrophone: async (deviceId: string) => {
         const newStream = await switchMicrophoneDevice(deviceId);

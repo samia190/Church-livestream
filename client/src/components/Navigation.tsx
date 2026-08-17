@@ -16,24 +16,26 @@ export default function Navigation() {
     { href: '/sermons', label: 'Sermons' },
     { href: '/events', label: 'Events' },
     { href: '/community', label: 'Community' },
-    { href: '/community-hub', label: 'Trusted Circles' },
-    { href: '/care', label: 'Pastoral Care' },
-    { href: '/faith-in-action', label: 'Faith in Action' },
-    { href: '/scripture-companion', label: 'Scripture Companion' },
     { href: '/contact', label: 'Contact' },
     { href: '/prayer', label: 'Prayer' },
-    { href: '/prayer-room', label: 'Prayer Room' },
-    { href: '/prayer-gatherings', label: 'Prayer Gatherings' },
-    { href: '/journey', label: 'Walk With Christ' },
-    { href: '/journal', label: 'Faith Journal' },
     { href: '/admin', label: 'Admin' },
   ];
 
   // Lock body scroll when mobile menu is open
   useEffect(() => {
-    document.body.style.overflow = isOpen ? 'hidden' : '';
+    if (isOpen) {
+      document.body.style.overflow = 'hidden';
+      document.body.style.position = 'fixed';
+      document.body.style.width = '100%';
+    } else {
+      document.body.style.overflow = '';
+      document.body.style.position = '';
+      document.body.style.width = '';
+    }
     return () => {
       document.body.style.overflow = '';
+      document.body.style.position = '';
+      document.body.style.width = '';
     };
   }, [isOpen]);
 

@@ -1,12 +1,12 @@
-import crypto from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 
-export type PaymentProvider = "mpesa" | "paypal";
+export type PaymentProvider = "mpesa" | "paypal" | "stripe";
 
 export type PaymentInput = {
   amount: number;
   currency: "KES" | "USD";
   donorName: string;
-  email: string;
+  email?: string;
   phone?: string;
   purpose?: string;
   callbackBaseUrl: string;
@@ -21,8 +21,12 @@ export type PaymentInitResult = {
   customerMessage: string;
 };
 
-const mpesaBaseUrl = process.env.MPESA_BASE_URL || "https://sandbox.safaricom.co.ke";
-const paypalBaseUrl = process.env.PAYPAL_BASE_URL || "https://api-m.sandbox.paypal.com";
+const mpesaBaseUrl =
+  process.env.MPESA_BASE_URL || "https://sandbox.safaricom.co.ke";
+const paypalBaseUrl =
+  process.env.PAYPAL_BASE_URL || "https://api-m.sandbox.paypal.com";
+const stripeBaseUrl =
+  process.env.STRIPE_BASE_URL || "https://api.stripe.com/v1";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -45,12 +49,17 @@ function normalizeMpesaPhone(phone: string): string {
 async function getMpesaToken(): Promise<string> {
   const key = requireEnv("MPESA_CONSUMER_KEY");
   const secret = requireEnv("MPESA_CONSUMER_SECRET");
-  const response = await fetch(`${mpesaBaseUrl}/oauth/v1/generate?grant_type=client_credentials`, {
-    headers: { Authorization: `Basic ${basicAuth(key, secret)}` },
-  });
-  if (!response.ok) throw new Error(`M-Pesa token request failed with ${response.status}`);
+  const response = await fetch(
+    `${mpesaBaseUrl}/oauth/v1/generate?grant_type=client_credentials`,
+    {
+      headers: { Authorization: `Basic ${basicAuth(key, secret)}` },
+    }
+  );
+  if (!response.ok)
+    throw new Error(`M-Pesa token request failed with ${response.status}`);
   const body = (await response.json()) as { access_token?: string };
-  if (!body.access_token) throw new Error("M-Pesa token response did not contain an access token");
+  if (!body.access_token)
+    throw new Error("M-Pesa token response did not contain an access token");
   return body.access_token;
 }
 
@@ -65,45 +74,138 @@ async function getPaypalToken(): Promise<string> {
     },
     body: "grant_type=client_credentials",
   });
-  if (!response.ok) throw new Error(`PayPal token request failed with ${response.status}`);
+  if (!response.ok)
+    throw new Error(`PayPal token request failed with ${response.status}`);
   const body = (await response.json()) as { access_token?: string };
-  if (!body.access_token) throw new Error("PayPal token response did not contain an access token");
+  if (!body.access_token)
+    throw new Error("PayPal token response did not contain an access token");
   return body.access_token;
 }
 
-export async function initiateMpesa(input: PaymentInput): Promise<PaymentInitResult> {
-  if (input.currency !== "KES") throw new Error("M-Pesa donations must use KES");
-  if (!input.phone) throw new Error("A Kenyan M-Pesa phone number is required");
-  const token = await getMpesaToken();
-  const shortcode = requireEnv("MPESA_SHORTCODE");
-  const passkey = requireEnv("MPESA_PASSKEY");
-  const timestamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
-  const password = Buffer.from(`${shortcode}${passkey}${timestamp}`).toString("base64");
-  const callbackUrl = `${input.callbackBaseUrl.replace(/\/$/, "")}/api/payments/mpesa/callback`;
-  const response = await fetch(`${mpesaBaseUrl}/mpesa/stkpush/v1/processrequest`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      BusinessShortCode: shortcode,
-      Password: password,
-      Timestamp: timestamp,
-      TransactionType: process.env.MPESA_TRANSACTION_TYPE || "CustomerPayBillOnline",
-      Amount: Math.round(input.amount),
-      PartyA: normalizeMpesaPhone(input.phone),
-      PartyB: shortcode,
-      PhoneNumber: normalizeMpesaPhone(input.phone),
-      CallBackURL: callbackUrl,
-      AccountReference: input.reference.slice(0, 12),
-      TransactionDesc: (input.purpose || "Church donation").slice(0, 20),
-    }),
-  });
-  if (!response.ok) throw new Error(`M-Pesa STK request failed with ${response.status}`);
-  const body = (await response.json()) as { ResponseCode?: string; CheckoutRequestID?: string; CustomerMessage?: string; errorMessage?: string };
-  if (body.ResponseCode !== "0" || !body.CheckoutRequestID) throw new Error(body.errorMessage || "M-Pesa STK request was not accepted");
-  return { provider: "mpesa", providerReference: body.CheckoutRequestID, customerMessage: body.CustomerMessage || "Check your phone to complete the M-Pesa payment" };
+export async function createStripeCheckoutSession(
+  input: PaymentInput
+): Promise<PaymentInitResult> {
+  if (input.currency !== "USD")
+    throw new Error("Stripe donations must use USD");
+  const secretKey = requireEnv("STRIPE_SECRET_KEY");
+  const callbackBase = input.callbackBaseUrl.replace(/\/$/, "");
+  const params = new URLSearchParams();
+  params.set("mode", "payment");
+  params.set(
+    "success_url",
+    `${callbackBase}/give?payment=stripe-success&session_id={CHECKOUT_SESSION_ID}`
+  );
+  params.set("cancel_url", `${callbackBase}/give?payment=stripe-cancelled`);
+  params.set("payment_method_types[0]", "card");
+  params.set("line_items[0][price_data][currency]", "usd");
+  params.set(
+    "line_items[0][price_data][product_data][name]",
+    (input.purpose || "Church donation").slice(0, 120)
+  );
+  params.set(
+    "line_items[0][price_data][unit_amount]",
+    String(Math.round(input.amount * 100))
+  );
+  params.set("line_items[0][quantity]", "1");
+  params.set("client_reference_id", input.donationId || input.reference);
+  params.set("metadata[donationId]", input.donationId || "");
+  params.set("metadata[givingReference]", input.reference.slice(0, 40));
+  if (input.email) params.set("customer_email", input.email);
+
+  const response = await fetch(
+    `${stripeBaseUrl.replace(/\/$/, "")}/checkout/sessions`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secretKey}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: params,
+    }
+  );
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(
+      `Stripe Checkout request failed with ${response.status}: ${errorBody.slice(0, 240)}`
+    );
+  }
+  const body = (await response.json()) as {
+    id?: string;
+    url?: string;
+  };
+  if (!body.id || !body.url)
+    throw new Error("Stripe Checkout response did not contain a session URL");
+  return {
+    provider: "stripe",
+    providerReference: body.id,
+    approvalUrl: body.url,
+    customerMessage: "Continue to Stripe Checkout to complete your donation",
+  };
 }
 
-export async function createPaypalOrder(input: PaymentInput): Promise<PaymentInitResult> {
+export async function initiateMpesa(
+  input: PaymentInput
+): Promise<PaymentInitResult> {
+  if (input.currency !== "KES")
+    throw new Error("M-Pesa donations must use KES");
+  if (!input.phone) throw new Error("A Kenyan M-Pesa phone number is required");
+  const paybillNumber = requireEnv("MPESA_PAYBILL_NUMBER");
+  const token = await getMpesaToken();
+  const passkey = requireEnv("MPESA_PASSKEY");
+  const timestamp = new Date()
+    .toISOString()
+    .replace(/[-:TZ.]/g, "")
+    .slice(0, 14);
+  const password = Buffer.from(
+    `${paybillNumber}${passkey}${timestamp}`
+  ).toString("base64");
+  const callbackUrl = `${input.callbackBaseUrl.replace(/\/$/, "")}/api/payments/mpesa/callback`;
+  const response = await fetch(
+    `${mpesaBaseUrl}/mpesa/stkpush/v1/processrequest`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        BusinessShortCode: paybillNumber,
+        Password: password,
+        Timestamp: timestamp,
+        TransactionType:
+          process.env.MPESA_TRANSACTION_TYPE || "CustomerPayBillOnline",
+        Amount: Math.round(input.amount),
+        PartyA: normalizeMpesaPhone(input.phone),
+        PartyB: paybillNumber,
+        PhoneNumber: normalizeMpesaPhone(input.phone),
+        CallBackURL: callbackUrl,
+        AccountReference: input.reference.slice(0, 12),
+        TransactionDesc: (input.purpose || "Church donation").slice(0, 20),
+      }),
+    }
+  );
+  if (!response.ok)
+    throw new Error(`M-Pesa STK request failed with ${response.status}`);
+  const body = (await response.json()) as {
+    ResponseCode?: string;
+    CheckoutRequestID?: string;
+    CustomerMessage?: string;
+    errorMessage?: string;
+  };
+  if (body.ResponseCode !== "0" || !body.CheckoutRequestID)
+    throw new Error(body.errorMessage || "M-Pesa STK request was not accepted");
+  return {
+    provider: "mpesa",
+    providerReference: body.CheckoutRequestID,
+    customerMessage:
+      body.CustomerMessage ||
+      "Check your phone to complete the M-PESA PayBill payment",
+  };
+}
+
+export async function createPaypalOrder(
+  input: PaymentInput
+): Promise<PaymentInitResult> {
   const token = await getPaypalToken();
   const callbackBase = input.callbackBaseUrl.replace(/\/$/, "");
   const response = await fetch(`${paypalBaseUrl}/v2/checkout/orders`, {
@@ -116,50 +218,133 @@ export async function createPaypalOrder(input: PaymentInput): Promise<PaymentIni
     },
     body: JSON.stringify({
       intent: "CAPTURE",
-      purchase_units: [{ reference_id: input.reference, description: input.purpose || "Church donation", amount: { currency_code: input.currency, value: input.amount.toFixed(2) } }],
-      application_context: { return_url: `${callbackBase}/give?payment=paypal-success&donationId=${encodeURIComponent(input.donationId || "")}`, cancel_url: `${callbackBase}/give?payment=paypal-cancelled`, user_action: "PAY_NOW" },
+      purchase_units: [
+        {
+          reference_id: input.reference,
+          description: input.purpose || "Church donation",
+          amount: {
+            currency_code: input.currency,
+            value: input.amount.toFixed(2),
+          },
+        },
+      ],
+      application_context: {
+        return_url: `${callbackBase}/give?payment=paypal-success&donationId=${encodeURIComponent(input.donationId || "")}`,
+        cancel_url: `${callbackBase}/give?payment=paypal-cancelled`,
+        user_action: "PAY_NOW",
+      },
     }),
   });
-  if (!response.ok) throw new Error(`PayPal order request failed with ${response.status}`);
-  const body = (await response.json()) as { id?: string; links?: Array<{ rel?: string; href?: string }> };
+  if (!response.ok)
+    throw new Error(`PayPal order request failed with ${response.status}`);
+  const body = (await response.json()) as {
+    id?: string;
+    links?: Array<{ rel?: string; href?: string }>;
+  };
   const approvalUrl = body.links?.find(link => link.rel === "approve")?.href;
-  if (!body.id || !approvalUrl) throw new Error("PayPal order response did not contain an approval link");
-  return { provider: "paypal", providerReference: body.id, approvalUrl, customerMessage: "Continue to PayPal to complete your donation" };
+  if (!body.id || !approvalUrl)
+    throw new Error("PayPal order response did not contain an approval link");
+  return {
+    provider: "paypal",
+    providerReference: body.id,
+    approvalUrl,
+    customerMessage: "Continue to PayPal to complete your donation",
+  };
 }
 
-export async function capturePaypalOrder(orderId: string): Promise<{ completed: boolean; transactionId?: string }> {
+export async function capturePaypalOrder(
+  orderId: string
+): Promise<{ completed: boolean; transactionId?: string }> {
   const token = await getPaypalToken();
-  const response = await fetch(`${paypalBaseUrl}/v2/checkout/orders/${encodeURIComponent(orderId)}/capture`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-  });
-  if (!response.ok) throw new Error(`PayPal capture failed with ${response.status}`);
-  const body = (await response.json()) as { status?: string; purchase_units?: Array<{ payments?: { captures?: Array<{ id?: string; status?: string }> } }> };
+  const response = await fetch(
+    `${paypalBaseUrl}/v2/checkout/orders/${encodeURIComponent(orderId)}/capture`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+    }
+  );
+  if (!response.ok)
+    throw new Error(`PayPal capture failed with ${response.status}`);
+  const body = (await response.json()) as {
+    status?: string;
+    purchase_units?: Array<{
+      payments?: { captures?: Array<{ id?: string; status?: string }> };
+    }>;
+  };
   const capture = body.purchase_units?.[0]?.payments?.captures?.[0];
-  return { completed: body.status === "COMPLETED" && capture?.status === "COMPLETED", transactionId: capture?.id };
+  return {
+    completed: body.status === "COMPLETED" && capture?.status === "COMPLETED",
+    transactionId: capture?.id,
+  };
 }
 
-export async function verifyPaypalWebhook(headers: Record<string, string | undefined>, event: unknown): Promise<boolean> {
+export async function verifyPaypalWebhook(
+  headers: Record<string, string | undefined>,
+  event: unknown
+): Promise<boolean> {
   const token = await getPaypalToken();
   const webhookId = requireEnv("PAYPAL_WEBHOOK_ID");
-  const response = await fetch(`${paypalBaseUrl}/v1/notifications/verify-webhook-signature`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      auth_algo: headers["paypal-auth-algo"],
-      cert_url: headers["paypal-cert-url"],
-      transmission_id: headers["paypal-transmission-id"],
-      transmission_sig: headers["paypal-transmission-sig"],
-      transmission_time: headers["paypal-transmission-time"],
-      webhook_id: webhookId,
-      webhook_event: event,
-    }),
-  });
+  const response = await fetch(
+    `${paypalBaseUrl}/v1/notifications/verify-webhook-signature`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        auth_algo: headers["paypal-auth-algo"],
+        cert_url: headers["paypal-cert-url"],
+        transmission_id: headers["paypal-transmission-id"],
+        transmission_sig: headers["paypal-transmission-sig"],
+        transmission_time: headers["paypal-transmission-time"],
+        webhook_id: webhookId,
+        webhook_event: event,
+      }),
+    }
+  );
   if (!response.ok) return false;
   const body = (await response.json()) as { verification_status?: string };
   return body.verification_status === "SUCCESS";
 }
 
+export function verifyStripeWebhook(
+  payload: string,
+  signatureHeader: string | undefined
+): Record<string, any> {
+  const endpointSecret = requireEnv("STRIPE_WEBHOOK_SECRET");
+  if (!signatureHeader) throw new Error("Missing Stripe signature header");
+  const parts = signatureHeader.split(",");
+  const timestampPart = parts.find(part => part.startsWith("t="));
+  const timestamp = Number(timestampPart?.slice(2));
+  const signatures = parts
+    .filter(part => part.startsWith("v1="))
+    .map(part => part.slice(3));
+  if (!Number.isFinite(timestamp) || signatures.length === 0)
+    throw new Error("Invalid Stripe signature header");
+  if (Math.abs(Math.floor(Date.now() / 1000) - timestamp) > 300)
+    throw new Error("Expired Stripe webhook signature");
+
+  const signedPayload = `${timestamp}.${payload}`;
+  const expected = createHmac("sha256", endpointSecret)
+    .update(signedPayload, "utf8")
+    .digest("hex");
+  const expectedBuffer = Buffer.from(expected, "utf8");
+  const valid = signatures.some(signature => {
+    const signatureBuffer = Buffer.from(signature, "utf8");
+    return (
+      signatureBuffer.length === expectedBuffer.length &&
+      timingSafeEqual(signatureBuffer, expectedBuffer)
+    );
+  });
+  if (!valid) throw new Error("Invalid Stripe webhook signature");
+
+  return JSON.parse(payload) as Record<string, any>;
+}
+
 export function newIdempotencyKey(): string {
-  return crypto.randomUUID();
+  return randomUUID();
 }

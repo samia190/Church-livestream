@@ -1,17 +1,26 @@
-import { getLoginUrl } from "@/const";
-import { trpc } from "@/lib/trpc";
 import { TRPCClientError } from "@trpc/client";
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect } from "react";
+import { useLocation } from "wouter";
+import { trpc } from "@/lib/trpc";
 
 type UseAuthOptions = {
   redirectOnUnauthenticated?: boolean;
   redirectPath?: string;
 };
 
+function getCurrentPath() {
+  if (typeof window === "undefined") return "/";
+  return `${window.location.pathname}${window.location.search}`;
+}
+
 export function useAuth(options?: UseAuthOptions) {
   const { redirectOnUnauthenticated = false, redirectPath } = options ?? {};
-  // Use a fallback for redirectPath to avoid calling getLoginUrl() immediately if not needed
-  const finalRedirectPath = redirectPath || (redirectOnUnauthenticated ? getLoginUrl() : "#");
+  const [, setLocation] = useLocation();
+  const finalRedirectPath =
+    redirectPath ||
+    (redirectOnUnauthenticated
+      ? `/auth?next=${encodeURIComponent(getCurrentPath())}`
+      : "#");
   const utils = trpc.useUtils();
 
   const meQuery = trpc.auth.me.useQuery(undefined, {
@@ -42,44 +51,28 @@ export function useAuth(options?: UseAuthOptions) {
     }
   }, [logoutMutation, utils]);
 
-  const state = useMemo(() => {
-    localStorage.setItem(
-      "manus-runtime-user-info",
-      JSON.stringify(meQuery.data)
-    );
-    return {
-      user: meQuery.data ?? null,
-      loading: meQuery.isLoading || logoutMutation.isPending,
-      error: meQuery.error ?? logoutMutation.error ?? null,
-      isAuthenticated: Boolean(meQuery.data),
-    };
-  }, [
-    meQuery.data,
-    meQuery.error,
-    meQuery.isLoading,
-    logoutMutation.error,
-    logoutMutation.isPending,
-  ]);
+  const loading = meQuery.isLoading || logoutMutation.isPending;
+  const user = meQuery.data ?? null;
 
   useEffect(() => {
-    if (!redirectOnUnauthenticated) return;
-    if (meQuery.isLoading || logoutMutation.isPending) return;
-    if (state.user) return;
+    if (!redirectOnUnauthenticated || loading || user) return;
     if (typeof window === "undefined") return;
     if (!finalRedirectPath || finalRedirectPath === "#") return;
-    if (window.location.href === finalRedirectPath) return;
-
-    window.location.assign(finalRedirectPath);
+    if (window.location.pathname === "/auth") return;
+    setLocation(finalRedirectPath);
   }, [
-    redirectOnUnauthenticated,
     finalRedirectPath,
-    logoutMutation.isPending,
-    meQuery.isLoading,
-    state.user,
+    loading,
+    redirectOnUnauthenticated,
+    setLocation,
+    user,
   ]);
 
   return {
-    ...state,
+    user,
+    loading,
+    error: meQuery.error ?? logoutMutation.error ?? null,
+    isAuthenticated: Boolean(user),
     refresh: () => meQuery.refetch(),
     logout,
   };

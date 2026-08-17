@@ -1,6 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNetwork, getAdaptiveStreamSettings } from "./useNetwork";
-import { ICE_SERVERS } from "@/lib/iceServers";
+
+// Professional WebRTC Infrastructure
+// STUN servers for NAT traversal + multiple redundant sources
+// TURN servers ensure connectivity through carrier-grade NATs (CGNAT) on 3G/4G/5G
+const ICE_SERVERS: RTCIceServer[] = [
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun1.l.google.com:19302" },
+  { urls: "stun:stun2.l.google.com:19302" },
+  { urls: "stun:stun3.l.google.com:19302" },
+  { urls: "stun:stun4.l.google.com:19302" },
+  { urls: "stun:stun.services.mozilla.com" },
+  { urls: "stun:stun.cloudflare.com:3478" },
+  // Public TURN relay — critical for mobile devices behind CGNAT
+  { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
+  { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
+  { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" },
+];
 
 export type BroadcastMode = "offline" | "pre-stream" | "live";
 
@@ -35,8 +51,7 @@ type ConnectionState = "connecting" | "connected" | "disconnected" | "reconnecti
  * 4. Buffer ICE candidates properly and flush them when the peer connection is ready
  * 5. Use ICE restarts instead of full connection teardown when ICE fails
  */
-export function useViewer(options: { enabled?: boolean } = {}) {
-  const enabled = options.enabled ?? true;
+export function useViewer() {
   const network = useNetwork();
   const wsRef = useRef<WebSocket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
@@ -261,7 +276,7 @@ export function useViewer(options: { enabled?: boolean } = {}) {
             createViewerOffer(newPc);
           }
         }
-      }, 4000);
+      }, 10000);
     } catch (error) {
       console.error("[useViewer] Failed to create viewer offer:", error);
       isConnectingRef.current = false;
@@ -318,7 +333,6 @@ export function useViewer(options: { enabled?: boolean } = {}) {
             // proactively start the WebRTC handshake
             if (isNowLive && !pcRef.current && !isConnectingRef.current) {
               console.log('[useViewer] Stream is live, proactively starting WebRTC handshake');
-              isConnectingRef.current = true;
               const pc = createPeerConnection();
               setupTrackHandler(pc);
               createViewerOffer(pc);
@@ -500,11 +514,6 @@ export function useViewer(options: { enabled?: boolean } = {}) {
   // which caused the WebSocket to be torn down and recreated every time the stream status changed,
   // triggering `window.location.reload()` in the onclose handler.
   useEffect(() => {
-    if (!enabled) {
-      cleanupPeerConnection();
-      setConnectionState("disconnected");
-      return;
-    }
     let ws: WebSocket | null = null;
     let isClosed = false;
 
@@ -566,7 +575,7 @@ export function useViewer(options: { enabled?: boolean } = {}) {
       }
       cleanupPeerConnection();
     };
-  }, [enabled, handleMessage, cleanupPeerConnection]);
+  }, [handleMessage, cleanupPeerConnection]);
 
   const sendChatMessage = useCallback((message: string, user: string = "Viewer") => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -580,7 +589,6 @@ export function useViewer(options: { enabled?: boolean } = {}) {
 
   // Manual reconnect function
   const reconnect = useCallback(() => {
-    if (!enabled) return;
     reconnectAttemptRef.current = 0;
     wsReconnectAttemptRef.current = 0;
     cleanupPeerConnection();
@@ -600,7 +608,7 @@ export function useViewer(options: { enabled?: boolean } = {}) {
         setConnectionState("disconnected");
       };
     }
-  }, [enabled, cleanupPeerConnection, handleMessage]);
+  }, [cleanupPeerConnection, handleMessage]);
 
   return {
     remoteStream,

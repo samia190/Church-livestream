@@ -3,6 +3,7 @@ import express from "express";
 import { createServer } from "http";
 import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
+import { registerOAuthRoutes } from "./oauth";
 import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
@@ -38,35 +39,16 @@ async function startServer() {
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("X-Frame-Options", "SAMEORIGIN");
     res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
-    res.setHeader(
-      "Permissions-Policy",
-      "camera=(self), microphone=(self), geolocation=()"
-    );
-    if (process.env.NODE_ENV === "production")
-      res.setHeader(
-        "Strict-Transport-Security",
-        "max-age=31536000; includeSubDomains"
-      );
+    res.setHeader("Permissions-Policy", "camera=(self), microphone=(self), geolocation=()");
+    if (process.env.NODE_ENV === "production") res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
     next();
   });
   const server = createServer(app);
   // Configure body parser with larger size limit for file uploads
-  app.use(
-    express.json({
-      limit: "50mb",
-      verify: (req, _res, buffer) => {
-        const path = (
-          req as typeof req & { originalUrl?: string }
-        ).originalUrl?.split("?")[0];
-        if (path === "/api/payments/stripe/webhook") {
-          (req as typeof req & { rawBody?: Buffer }).rawBody =
-            Buffer.from(buffer);
-        }
-      },
-    })
-  );
+  app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   registerStorageProxy(app);
+  registerOAuthRoutes(app);
   registerPaymentRoutes(app);
   registerNotificationRoutes(app);
 
@@ -113,9 +95,7 @@ async function startServer() {
     await connectToMongo();
   } catch (error) {
     console.warn("[Server] MongoDB connection failed on startup:", error);
-    console.warn(
-      "[Server] Continuing server startup — DB queries will attempt reconnection"
-    );
+    console.warn("[Server] Continuing server startup — DB queries will attempt reconnection");
   }
 
   server.listen(port, () => {
